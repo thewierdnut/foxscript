@@ -133,7 +133,30 @@ public:
       SDL_UpdateTexture(m_texture.get(), NULL, frame.data, frame.step);
 
       cv::cvtColor(frame, m_data, cv::COLOR_BGR2GRAY);
-      cv::threshold(m_data, m_data, 64, 255, 0);
+      cv::medianBlur(m_data, m_data, 5);
+      cv::threshold(m_data, m_data, 64, 255, cv::THRESH_BINARY_INV);
+
+      // Words are joined together, usually with the horizontal centerline,
+      // but not always. Try to collect and save off rects representing each
+      // word, so that we know to insert a space if we leave it.
+      std::vector<std::vector<cv::Point>> contours;
+      m_word_rects.clear();
+      cv::findContours(m_data, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_NONE);
+      for (auto& c: contours)
+      {
+         int x1 = 100000;
+         int y1 = 100000;
+         int x2 = -1;
+         int y2 = -1;
+         for (auto& p: c)
+         {
+            if (p.x < x1) x1 = p.x;
+            if (p.y < y1) y1 = p.y;
+            if (p.x > x2) x2 = p.x;
+            if (p.y > y2) y2 = p.y;
+         }
+         m_word_rects.push_back(SDL_Rect{x1 - 2, y1 - 2, x2 - x1 + 4, y2 - y1 + 4});
+      }
 
       ScanForGlyphs();
    }
@@ -143,6 +166,7 @@ public:
       // Render
       SDL_SetRenderDrawColor(m_renderer.get(), 0, 0, 0, 255);
       SDL_RenderClear(m_renderer.get());
+
       auto r = m_dst_rect;
       r.x += m_dx;
       r.y += m_dy;
@@ -152,12 +176,28 @@ public:
 
       SDL_RenderCopy(m_renderer.get(), m_texture.get(), NULL, &r);
 
+      // Debug, drawing shape rects
+      SDL_SetRenderDrawColor(m_renderer.get(), 0, 0, 255, 128);
+      for (const SDL_Rect& r: m_word_rects)
+      {
+         // These are in image coordinates.
+         SDL_Rect rs{
+            .x = ImgToScreen(r.x) + m_dx,
+            .y = ImgToScreen(r.y) + m_dy,
+            .w = ImgToScreen(r.w),
+            .h = ImgToScreen(r.h)
+         };
+         SDL_RenderFillRect(m_renderer.get(), &rs);
+      }
+
+      // Horizontal baseline;
       SDL_SetRenderDrawColor(m_renderer.get(), 255, 0, 0, 64);
       SDL_Rect horzline = m_dst_rect;
       horzline.y = horzline.h / 2 - LINE_THICKNESS/2;
       horzline.h = LINE_THICKNESS;
       SDL_RenderFillRect(m_renderer.get(), &horzline);
 
+      // Vertial alignment marker
       SDL_Rect vertline{
          .x = horzline.w / 4 - LINE_THICKNESS/2,
          .y = horzline.y - m_estimated_height / 2,
@@ -166,19 +206,18 @@ public:
       };
       SDL_RenderFillRect(m_renderer.get(), &vertline);
 
+      // Any detected glyphs
       for (auto& g: m_detected_glyphs)
       {
          RenderGlyph(g);
       }
 
+      // If we saw a glyph that was invalid, chances are we detected part of a
+      // good one. Show it so that the user knows they are close to matching.
       if (m_bad_glyph.g)
       {
          RenderGlyph(m_bad_glyph, 255, 0, 0);
       }
-
-      SDL_SetRenderDrawColor(m_renderer.get(), 32, 32, 255, 255);
-      SDL_Rect dr{20, 20, 20, 20};
-      SDL_RenderFillRect(m_renderer.get(), &dr);
 
       SDL_RenderPresent(m_renderer.get());
    }
@@ -345,7 +384,7 @@ protected:
             //    pixel.val[1] = 255;
             //    pixel.val[2] = 255;
             // }
-            if (m_data.at<uint8_t>(it.pos()) == 0)
+            if (m_data.at<uint8_t>(it.pos()) == 255)
                ++l;
 
             if (m_debug_stamp)
@@ -401,6 +440,36 @@ protected:
    // Try and find multiple glyphs in a row (ie a "word")
    size_t ScanForGlyphSequence(int x, int y, std::vector<Glyph>& retglyphs, bool has_space = false)
    {
+      // Limit our guessing to the rect containing our word
+      const int ix = ScreenToImg(x - m_dx);
+      const int iy = ScreenToImg(y - m_dy);
+      const int iheight = ScreenToImg(INITIAL_HEIGHT);
+      const int iwidth = ScreenToImg(INITIAL_STRIDE);
+
+      int word_left = -100000;
+      int word_right = -100000;
+      for (auto& r: m_word_rects)
+      {
+         // Extend the left edge slightly, and use a minimum height to make
+         // sure that words like "I" (glyph 1) that are floating and
+         // disconnected still can find the glyph center in the rect.
+         if (ix > r.x - (iwidth / 16) && iy - (iheight / 16) > r.y &&
+             ix < r.x + r.w + iwidth / 8 && iy < r.y + iheight + iheight / 8)
+         {
+            word_left = ImgToScreen(r.x - (iwidth / 16)) + m_dx;
+            word_right = ImgToScreen(r.x + r.w + iwidth / 8) + m_dx;
+            break;
+         }
+      }
+      if (word_left == -100000)
+         return 0; // Not inside any word rect.
+
+      // for (int i = 0; i < 30; ++i)
+      // {
+      //    m_data.at<uint8_t>(ScreenToImg(y - m_dy) + i, ScreenToImg(word_left - m_dx)) = 200;
+      //    m_data.at<uint8_t>(ScreenToImg(y - m_dy) + i, ScreenToImg(word_right - m_dx)) = 200;
+      // }
+
       size_t best_guess = 0;
       retglyphs.clear();
       for (int dx = has_space ? -12 : -6; dx < 7; dx += 2)
@@ -426,7 +495,7 @@ protected:
                   size_t quality_total = 0;
                   Glyph bad_glyph{};
                   std::tie(g.g, quality) = SampleGlyph(g.x, g.y, stride, height);
-                  while(g.g)
+                  while(g.g && g.x < word_right)
                   {
                      const char* vowel = VOWELS[g.g & 63];
                      const char* consonant = CONSONANTS[(g.g >> 6) & 63];
@@ -479,16 +548,19 @@ protected:
          more_glyphs.clear();
 
          // Realign, append a space and attempt to find the next word.
-         x += m_detected_glyphs.size() * m_estimated_stride;
+         x = m_detected_glyphs.back().x + m_estimated_stride;
          Glyph g{
             .g = GLYPH_SPACE,
             .x = x,
             .y = y
          };
          
+         x += m_estimated_stride * 4 / 10;
+
+         
          m_detected_glyphs.push_back(g);
-         break;
-         quality = ScanForGlyphSequence(x, y, more_glyphs, true);
+         
+         quality = ScanForGlyphSequence(x, y, more_glyphs, false);
       }
       
 
@@ -532,6 +604,7 @@ private:
 
    std::vector<Glyph> m_detected_glyphs;
    Glyph m_bad_glyph{};
+   std::vector<SDL_Rect> m_word_rects;
 
    int m_dx = 0;
    int m_dy = 0;
@@ -556,17 +629,6 @@ int main(int argc, char* argv[]) {
    cv::Mat frame;
    frame = cv::imread("/home/rian/Downloads/IMG_20260216_090246644_AE~2.jpg");
    cv::resize(frame, frame, {frame.cols / 4, frame.rows / 4});
-   for (int i = 0; i < 20; ++i)
-   {
-      for (int j = 0; j < 20; ++j)
-      {
-         auto& p =frame.at<cv::Vec3b>(20 + i, 20 + j);
-         p.val[0] = 0;
-         p.val[1] = 0;
-         p.val[2] = 0;
-      }
-   }
-   
    auto t = frame.type();
    
    bool dirty = true;
