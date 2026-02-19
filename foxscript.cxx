@@ -2,6 +2,9 @@
 #include <opencv2/opencv.hpp>
 #include <iostream>
 
+#include "TscSampler.hh"
+#include "src/Text.hh"
+
 constexpr size_t WIDTH = 640;
 constexpr size_t HEIGHT = 480;
 constexpr int LINE_THICKNESS = 5;
@@ -11,7 +14,7 @@ constexpr int INITIAL_STRIDE = 38;
 constexpr int INITIAL_HEIGHT = 64;
 
 // How much to vary the size and height to find them.
-constexpr int STRIDE_VARIANCE = 10;
+constexpr int STRIDE_VARIANCE = 12;
 constexpr int HEIGHT_VARIANCE = 20;
 
 // Special glyph value representing a space
@@ -84,7 +87,30 @@ constexpr struct {int x, y;} VOWEL_FIRST = {0, -6};
 class SdlWindow
 {
 public:
-   SdlWindow() {}
+   SdlWindow()
+   {
+      // Prepopulate the parameters we vary to find the glyphs, since they
+      // should be sorted by how "abnormal" they are.
+      for (int dx = -6; dx <= 6; dx += 2)
+      {
+         for (int dy = -6; dy <= 6; dy += 2)
+         {
+            for (int stride = INITIAL_STRIDE - STRIDE_VARIANCE; stride < INITIAL_STRIDE + STRIDE_VARIANCE; stride += 2)
+            {
+               for (int height = INITIAL_HEIGHT - HEIGHT_VARIANCE; height < INITIAL_HEIGHT + HEIGHT_VARIANCE; height += 2)
+               {
+                  m_guess_params.emplace_back(dx, dy, stride, height);
+               }
+            }
+         }
+      }
+      std::sort(m_guess_params.begin(), m_guess_params.end(),
+         [](const cv::Vec4i& a, const cv::Vec4i& b) {
+            return abs(a[0]) + abs(a[1]) + abs(a[2] - INITIAL_STRIDE) + abs(a[3] - INITIAL_HEIGHT)
+                 < abs(b[0]) + abs(b[1]) + abs(b[2] - INITIAL_STRIDE) + abs(b[3] - INITIAL_HEIGHT);
+         }
+      );
+   }
    bool Create(size_t frame_width, size_t frame_height)
    {
       m_frame_width = frame_width;
@@ -117,6 +143,8 @@ public:
                                     SDL_TEXTUREACCESS_STREAMING, frame_width, frame_height),
                       SDL_DestroyTexture);
 
+      m_font.reset(new Text(m_renderer, "text_24.png"));
+
       return true;
    }
    ~SdlWindow()
@@ -129,7 +157,9 @@ public:
    void Updatetexture(cv::Mat& frame)
    {
       m_data = frame;
+
       // Update texture with OpenCV frame data
+      // TODO: gemini lied to me. We should use SDL_LockTexture here.
       SDL_UpdateTexture(m_texture.get(), NULL, frame.data, frame.step);
 
       cv::cvtColor(frame, m_data, cv::COLOR_BGR2GRAY);
@@ -170,25 +200,26 @@ public:
       auto r = m_dst_rect;
       r.x += m_dx;
       r.y += m_dy;
-      cv::Mat color;
-      cv::cvtColor(m_data, color, cv::COLOR_GRAY2BGR);
-      SDL_UpdateTexture(m_texture.get(), NULL, color.data, color.step);
+
+      // cv::Mat color;
+      // cv::cvtColor(m_data, color, cv::COLOR_GRAY2BGR);
+      // SDL_UpdateTexture(m_texture.get(), NULL, color.data, color.step);
 
       SDL_RenderCopy(m_renderer.get(), m_texture.get(), NULL, &r);
 
-      // Debug, drawing shape rects
-      SDL_SetRenderDrawColor(m_renderer.get(), 0, 0, 255, 128);
-      for (const SDL_Rect& r: m_word_rects)
-      {
-         // These are in image coordinates.
-         SDL_Rect rs{
-            .x = ImgToScreen(r.x) + m_dx,
-            .y = ImgToScreen(r.y) + m_dy,
-            .w = ImgToScreen(r.w),
-            .h = ImgToScreen(r.h)
-         };
-         SDL_RenderFillRect(m_renderer.get(), &rs);
-      }
+      // // Debug, drawing shape rects
+      // SDL_SetRenderDrawColor(m_renderer.get(), 0, 0, 255, 128);
+      // for (const SDL_Rect& r: m_word_rects)
+      // {
+      //    // These are in image coordinates.
+      //    SDL_Rect rs{
+      //       .x = ImgToScreen(r.x) + m_dx,
+      //       .y = ImgToScreen(r.y) + m_dy,
+      //       .w = ImgToScreen(r.w),
+      //       .h = ImgToScreen(r.h)
+      //    };
+      //    SDL_RenderFillRect(m_renderer.get(), &rs);
+      // }
 
       // Horizontal baseline;
       SDL_SetRenderDrawColor(m_renderer.get(), 255, 0, 0, 64);
@@ -206,10 +237,60 @@ public:
       };
       SDL_RenderFillRect(m_renderer.get(), &vertline);
 
-      // Any detected glyphs
-      for (auto& g: m_detected_glyphs)
+      // Glyph overlay and translated text
+      if (!m_detected_glyphs.empty())
       {
-         RenderGlyph(g);
+         SDL_Point text_pos{
+            .y = horzline.y + INITIAL_HEIGHT
+         };
+
+         SDL_Rect text_background{
+            .x = 0,
+            .y = text_pos.y - m_font->Height() / 2,
+            .w = horzline.w,
+            .h = m_font->Height() * 2
+         };
+         SDL_SetRenderDrawColor(m_renderer.get(), 0, 0, 0, 64);
+         SDL_RenderFillRect(m_renderer.get(), &text_background);
+
+         
+         bool space = true;
+      
+         for (auto& g: m_detected_glyphs)
+         {
+            RenderGlyph(g);
+
+            if (space)
+            {
+               if (text_pos.x + m_font->Stride() > g.x - INITIAL_STRIDE/2)
+               {
+                  text_pos.x += m_font->Stride();
+               }
+               else
+               {
+                  text_pos.x = g.x - INITIAL_STRIDE/2;
+               }
+               space = false;
+            }
+            
+            const char* vowel = VOWELS[g.g & 63];
+            const char* consonant = CONSONANTS[(g.g >> 6) & 63];
+            bool swapped = (g.g & (1 << 12)) != 0;
+            if (g.g == GLYPH_SPACE)
+            {
+               space = true;
+            }
+            else if (swapped)
+            {
+               text_pos.x += m_font->Render(m_renderer, text_pos, vowel);
+               text_pos.x += m_font->Render(m_renderer, text_pos, consonant);
+            }
+            else
+            {
+               text_pos.x += m_font->Render(m_renderer, text_pos, consonant);
+               text_pos.x += m_font->Render(m_renderer, text_pos, vowel);
+            }
+         }
       }
 
       // If we saw a glyph that was invalid, chances are we detected part of a
@@ -218,6 +299,8 @@ public:
       {
          RenderGlyph(m_bad_glyph, 255, 0, 0);
       }
+
+      // m_font->Render(m_renderer, {50, 50}, "!\"#{|}~");
 
       SDL_RenderPresent(m_renderer.get());
    }
@@ -253,14 +336,23 @@ public:
       m_debug_stamp = true;
       for (auto& g: m_detected_glyphs)
       {
-         SampleGlyph(g.x, g.y, m_estimated_stride, m_estimated_height);
+         if (g.g != GLYPH_SPACE)
+            SampleGlyph(g.x, g.y, g.stride, g.height);
       }
 
       m_debug_stamp = false;
    }
 
 protected:
-   struct Glyph { uint16_t g; int x; int y; };
+   struct Glyph
+   {
+      uint16_t g;
+      int x;
+      int y;
+
+      int height;
+      int stride;
+   };
 
    // x and y are in screen coordinates
    void RenderGlyph(const Glyph& g, uint8_t cr = 0, uint8_t cg = 255, uint8_t cb = 0)
@@ -276,8 +368,10 @@ protected:
 
          SDL_SetRenderDrawColor(m_renderer.get(), 255, 0, 0, 64);
          SDL_Rect r2{
-            .x = g.x + m_estimated_stride / 2 - LINE_THICKNESS/2, .y = g.y - m_estimated_height / 2,
-            .w = LINE_THICKNESS, .h = m_estimated_height
+            .x = g.x - LINE_THICKNESS/2,
+            .y = g.y - m_estimated_height / 2,
+            .w = LINE_THICKNESS,
+            .h = m_estimated_height
          };
          SDL_RenderFillRect(m_renderer.get(), &r2);
 
@@ -336,6 +430,7 @@ protected:
    // @returns glyph mask, number of sampled black pixels.
    std::pair<uint16_t, size_t> SampleGlyph(int x, int y, int stride, int height)
    {
+      //TscSampler ts("sg");
       //uint16_t accuracy = 0;
       uint16_t glyph = 0;
       int px = ScreenToImg(x - m_dx);
@@ -344,6 +439,11 @@ protected:
       int p_stride = ScreenToImg(stride);
       int p_height = ScreenToImg(height);
 
+      // Don't read off the edge of the picture.
+      if (p_stride * 2 > x || x > m_data.cols - p_stride * 2 ||
+          p_height * 2 > y || y > m_data.rows - p_height * 2)
+         return {0, 0};
+      
       // For each segment position, sample three pixels and 30, 50, and 70%
       // of the line segment. If they are all dark, then assume the line
       // segment is drawn.
@@ -356,48 +456,49 @@ protected:
          s.p1.y = py + s.p1.y * p_height / GLYPH_SCALE;
          s.p2.x = px + s.p2.x * p_stride / GLYPH_SCALE;
          s.p2.y = py + s.p2.y * p_height / GLYPH_SCALE;
-         if (0 > s.p1.x || s.p1.x >= m_data.cols ||
-             0 > s.p2.x || s.p2.x >= m_data.cols ||
-             0 > s.p1.y || s.p1.y >= m_data.rows ||
-             0 > s.p2.y || s.p2.y >= m_data.rows)
-            return {0, 0};
+         
+         // int s1x = (s.p1.x * 2 + s.p2.x * 8) / 10; // 20%
+         // int s1y = (s.p1.y * 2 + s.p2.y * 8) / 10;
+         // int s2x = (s.p1.x + s.p2.x) / 2;          // 50%
+         // int s2y = (s.p1.y + s.p2.y) / 2;
+         // int s3x = (s.p1.x * 8 + s.p2.x * 2) / 10; // 80%
+         // int s3y = (s.p1.y * 8 + s.p2.y * 2) / 10;
+         // Line iterator, fairly accurate, 2116
+         // cv::LineIterator it(m_data, {s1x, s1y}, {s3x, s3y});
+         // uint32_t l = 0;
+         // uint32_t sample_points = it.count;
+         // for (int i = 0; i < it.count; ++i, ++it)
+         // {
+         //    // cv::Vec3b& pixel = m_data.at<cv::Vec3b>(it.pos());
+         //    // if ((int)pixel.val[0] + pixel.val[1] + pixel.val[2] < 96)
+         //    //    ++l;
+         //    // if (m_debug_stamp)
+         //    // {
+         //    //    pixel.val[0] = 255;
+         //    //    pixel.val[1] = 255;
+         //    //    pixel.val[2] = 255;
+         //    // }
+         //    if (m_data.at<uint8_t>(it.pos()) == 255)
+         //       ++l;
+         //
+         //    if (m_debug_stamp)
+         //       m_data.at<uint8_t>(it.pos()) = 100;
+         // }
 
-
-         int s1x = (s.p1.x * 2 + s.p2.x * 8) / 10; // 20%
-         int s1y = (s.p1.y * 2 + s.p2.y * 8) / 10;
-         int s2x = (s.p1.x + s.p2.x) / 2;          // 50%
-         int s2y = (s.p1.y + s.p2.y) / 2;
-         int s3x = (s.p1.x * 8 + s.p2.x * 2) / 10; // 80%
-         int s3y = (s.p1.y * 8 + s.p2.y * 2) / 10;
-
-         cv::LineIterator it(m_data, {s1x, s1y}, {s3x, s3y});
-         uint32_t l = 0;
-         uint32_t sample_points = it.count;
-         for (int i = 0; i < it.count; ++i, ++it)
-         {
-            // cv::Vec3b& pixel = m_data.at<cv::Vec3b>(it.pos());
-            // if ((int)pixel.val[0] + pixel.val[1] + pixel.val[2] < 96)
-            //    ++l;
-            // if (m_debug_stamp)
-            // {
-            //    pixel.val[0] = 255;
-            //    pixel.val[1] = 255;
-            //    pixel.val[2] = 255;
-            // }
-            if (m_data.at<uint8_t>(it.pos()) == 255)
-               ++l;
-
-            if (m_debug_stamp)
-               m_data.at<uint8_t>(it.pos()) = 100;
-         }
-
+         // Three 3x3 spots, 27 pixels total. Not accurate, 601
+         // int s1x = (s.p1.x * 2 + s.p2.x * 8) / 10; // 20%
+         // int s1y = (s.p1.y * 2 + s.p2.y * 8) / 10;
+         // int s2x = (s.p1.x + s.p2.x) / 2;          // 50%
+         // int s2y = (s.p1.y + s.p2.y) / 2;
+         // int s3x = (s.p1.x * 8 + s.p2.x * 2) / 10; // 80%
+         // int s3y = (s.p1.y * 8 + s.p2.y * 2) / 10;
          // uint32_t l = 0;
          // uint32_t sample_points = 0;
          // for (int dx = -1; dx <= 1; ++dx)
          // {
          //    for (int dy = -1; dy <= 1; ++dy)
          //    {
-         //       l += is_black(s1x + dx, s1y + dy);
+         //       l += m_data.at<uint8_t>(s1y + dy, s1x + dx) == 255;
          //       ++sample_points;
          //    }
          // }
@@ -405,7 +506,7 @@ protected:
          // {
          //    for (int dy = -1; dy <= 1; ++dy)
          //    {
-         //       l += is_black(s2x + dx, s2y + dy);
+         //       l += m_data.at<uint8_t>(s1y + dy, s1x + dx) == 255;
          //       ++sample_points;
          //    }
          // }
@@ -413,10 +514,62 @@ protected:
          // {
          //    for (int dy = -1; dy <= 1; ++dy)
          //    {
-         //       l += is_black(s3x + dx, s3y + dy);
+         //       l += m_data.at<uint8_t>(s1y + dy, s1x + dx) == 255;
          //       ++sample_points;
          //    }
          // }
+
+         // sample 7 points in a line, better than 3x3, worse than line, 555
+         // sample 15 points in a line, 763
+         // sample 7 points out of 15, 686
+         // sample 7 out of 7, 686
+         // no stamp check, 636
+         // sample 3, 386. Seems accurate enough, kind of surprising?
+         // sample 3 out of 15,  369. Lets try this for now.
+         uint32_t l = 0;
+         // const cv::Point sp[] = {
+         //    // {(s.p1.x * 1 + s.p2.x *15) / 16, (s.p1.y * 1 + s.p2.y *15) / 16},
+         //    {(s.p1.x * 2 + s.p2.x *14) / 16, (s.p1.y * 2 + s.p2.y *14) / 16},
+         //    // {(s.p1.x * 3 + s.p2.x *13) / 16, (s.p1.y * 3 + s.p2.y *13) / 16},
+         //    {(s.p1.x * 4 + s.p2.x *12) / 16, (s.p1.y * 4 + s.p2.y *12) / 16},
+         //    // {(s.p1.x * 5 + s.p2.x *11) / 16, (s.p1.y * 5 + s.p2.y *11) / 16},
+         //    {(s.p1.x * 6 + s.p2.x *10) / 16, (s.p1.y * 6 + s.p2.y *10) / 16},
+         //    // {(s.p1.x * 7 + s.p2.x * 9) / 16, (s.p1.y * 7 + s.p2.y * 9) / 16},
+         //    {(s.p1.x * 8 + s.p2.x * 8) / 16, (s.p1.y * 8 + s.p2.y * 8) / 16},
+         //    // {(s.p1.x * 9 + s.p2.x * 7) / 16, (s.p1.y * 9 + s.p2.y * 7) / 16},
+         //    {(s.p1.x *10 + s.p2.x * 6) / 16, (s.p1.y *10 + s.p2.y * 6) / 16},
+         //    // {(s.p1.x *11 + s.p2.x * 5) / 16, (s.p1.y *11 + s.p2.y * 5) / 16},
+         //    {(s.p1.x *12 + s.p2.x * 4) / 16, (s.p1.y *12 + s.p2.y * 4) / 16},
+         //    // {(s.p1.x *13 + s.p2.x * 3) / 16, (s.p1.y *13 + s.p2.y * 3) / 16},
+         //    {(s.p1.x *14 + s.p2.x * 2) / 16, (s.p1.y *14 + s.p2.y * 2) / 16},
+         //    // {(s.p1.x *15 + s.p2.x * 1) / 16, (s.p1.y *15 + s.p2.y * 1) / 16},
+         // };
+         // const cv::Point sp[] = {
+         //    {(s.p1.x * 1 + s.p2.x * 7) / 8, (s.p1.y * 1 + s.p2.y * 7) / 8},
+         //    {(s.p1.x * 2 + s.p2.x * 6) / 8, (s.p1.y * 2 + s.p2.y * 6) / 8},
+         //    {(s.p1.x * 3 + s.p2.x * 5) / 8, (s.p1.y * 3 + s.p2.y * 5) / 8},
+         //    {(s.p1.x * 4 + s.p2.x * 4) / 8, (s.p1.y * 4 + s.p2.y * 4) / 8},
+         //    {(s.p1.x * 5 + s.p2.x * 3) / 8, (s.p1.y * 5 + s.p2.y * 3) / 8},
+         //    {(s.p1.x * 6 + s.p2.x * 2) / 8, (s.p1.y * 6 + s.p2.y * 2) / 8},
+         //    {(s.p1.x * 7 + s.p2.x * 1) / 8, (s.p1.y * 7 + s.p2.y * 1) / 8},
+         // };
+         // const cv::Point sp[] = {
+         //    {(s.p1.x * 1 + s.p2.x * 3) / 4, (s.p1.y * 1 + s.p2.y * 3) / 4},
+         //    {(s.p1.x * 2 + s.p2.x * 2) / 4, (s.p1.y * 2 + s.p2.y * 2) / 4},
+         //    {(s.p1.x * 3 + s.p2.x * 1) / 4, (s.p1.y * 3 + s.p2.y * 1) / 4},
+         // };
+         const cv::Point sp[] = {
+            {(s.p1.x * 1 + s.p2.x *15) / 16, (s.p1.y * 1 + s.p2.y *15) / 16},
+            {(s.p1.x * 8 + s.p2.x * 8) / 16, (s.p1.y * 8 + s.p2.y * 8) / 16},
+            {(s.p1.x *15 + s.p2.x * 1) / 16, (s.p1.y *15 + s.p2.y * 1) / 16},
+         };
+         const uint32_t sample_points = sizeof(sp)/sizeof(*sp);
+         for (auto& p: sp)
+         {
+            l += m_data.at<uint8_t>(p.y, p.x) == 255;
+            // if (m_debug_stamp)
+            //    m_data.at<uint8_t>(p.y, p.x) = 100;
+         }
 
          // uint8_t l1 = luminance(s1x, s1y);
          // uint8_t l2 = luminance(s2x, s2y);
@@ -424,7 +577,7 @@ protected:
          // cv::line(m_data, {s.p1.x, s.p1.y}, {s.p2.x, s.p2.y}, {31, 0, 31}, 3);
 
          //if (l1 < 32 && l2 < 32 && l3 < 32)
-         if (l >= sample_points) //* 3 / 4)
+         if (l == sample_points) //* 3 / 4)
          {
             black_pixels += l;
             glyph |= (1 << i);
@@ -464,69 +617,85 @@ protected:
       if (word_left == -100000)
          return 0; // Not inside any word rect.
 
+      // baseline     19578586
+      // stride inc 2 10093313
+      // both inc 3    4875075  match more finicky
+      // st 2 he 3     7253668  better, but not as good as 1
+      // all 1       128061247  Very accurate and stable. And slow.
+      // all 2         9835266  Usable on desktop.
+      // TscSampler ts("sg");
+
       // for (int i = 0; i < 30; ++i)
       // {
       //    m_data.at<uint8_t>(ScreenToImg(y - m_dy) + i, ScreenToImg(word_left - m_dx)) = 200;
       //    m_data.at<uint8_t>(ScreenToImg(y - m_dy) + i, ScreenToImg(word_right - m_dx)) = 200;
       // }
 
+      const int ylim = has_space ? 1 : 6;
+      const int xlim = has_space ? 12 : 6;
+
+      int gx=0, gy=0, gs=0, gh=0;
+
       size_t best_guess = 0;
       retglyphs.clear();
-      for (int dx = has_space ? -12 : -6; dx < 7; dx += 2)
-      {
-         for (int dy = -6; dy < 7; ++dy)
-         {
-            for (int stride = INITIAL_STRIDE - STRIDE_VARIANCE; stride < INITIAL_STRIDE + STRIDE_VARIANCE; stride += 1)
-            {
-               for (int height = INITIAL_HEIGHT - HEIGHT_VARIANCE; height < INITIAL_HEIGHT + HEIGHT_VARIANCE; height += 2)
-      // for (int dx = 0; dx < 1; ++dx)
+      // Some shapes, especially symmetrical or simple ones tend to match
+      // extreme settings. We need to instead try all of these combinations
+      // sorted by how close to the center they are.
+      // for (int dx = -xlim; dx <= xlim; dx += 2)
       // {
-      //    for (int dy = 0; dy < 1; ++dy)
+      //    for (int dy = -ylim; dy <= ylim; ++dy)
       //    {
-      //       for (int stride = INITIAL_STRIDE; stride <= INITIAL_STRIDE; stride += 1)
+      //       for (int stride = INITIAL_STRIDE - STRIDE_VARIANCE; stride < INITIAL_STRIDE + STRIDE_VARIANCE; stride += 1)
       //       {
-      //          for (int height = INITIAL_HEIGHT; height <= INITIAL_HEIGHT; height += 2)
-               {
-                  std::vector<Glyph> glyphs;
-                  Glyph g{};
-                  g.x = x + dx;
-                  g.y = y + dy;
-                  size_t quality = 0;
-                  size_t quality_total = 0;
-                  Glyph bad_glyph{};
-                  std::tie(g.g, quality) = SampleGlyph(g.x, g.y, stride, height);
-                  while(g.g && g.x < word_right)
-                  {
-                     const char* vowel = VOWELS[g.g & 63];
-                     const char* consonant = CONSONANTS[(g.g >> 6) & 63];
-                     // Not every combination of line segments is a valid glyph.
-                     if (!vowel[0] && !consonant[0])
-                     {
-                        bad_glyph = g;
-                        break;
-                     }
-                     quality_total += quality;
-                     glyphs.push_back(g);
-                     
-
-                     g.x += stride;
-                     
-                     std::tie(g.g, quality) = SampleGlyph(g.x, g.y, stride, height);
-                  }
-
-                  if (quality_total > best_guess)
-                  {
-                     best_guess = quality_total;
-                     retglyphs.swap(glyphs);
-                     m_bad_glyph = bad_glyph;
-                     m_estimated_height = height;
-                     m_estimated_stride = stride;
-                  }
-                  glyphs.clear();
-               }
+      //          for (int height = INITIAL_HEIGHT - HEIGHT_VARIANCE; height < INITIAL_HEIGHT + HEIGHT_VARIANCE; height += 2)
+      std::vector<Glyph> glyphs;
+      for (auto& v: m_guess_params)
+      {
+         int dx = v[0], dy = v[1], stride = v[2], height = v[3];
+         glyphs.clear();
+         Glyph g{};
+         g.x = x + dx;
+         g.y = y + dy;
+         g.height = height;
+         g.stride = stride;
+         size_t quality = 0;
+         size_t quality_total = 0;
+         Glyph bad_glyph{};
+         std::tie(g.g, quality) = SampleGlyph(g.x, g.y, stride, height);
+         while(g.g && g.x < word_right)
+         {
+            const char* vowel = VOWELS[g.g & 63];
+            const char* consonant = CONSONANTS[(g.g >> 6) & 63];
+            // Not every combination of line segments is a valid glyph.
+            if (!vowel[0] && !consonant[0])
+            {
+               bad_glyph = g;
+               break;
             }
+            quality_total += quality;
+            glyphs.push_back(g);
+            
+
+            g.x += stride;
+            
+            std::tie(g.g, quality) = SampleGlyph(g.x, g.y, stride, height);
+         }
+
+         if (quality_total > best_guess)
+         {
+            best_guess = quality_total;
+            retglyphs.swap(glyphs);
+            m_bad_glyph = bad_glyph;
+            m_estimated_height = height;
+            m_estimated_stride = stride;
+
+            gx = dx;
+            gy = dy;
+            gh = height;
+            gs = stride;
          }
       }
+      // SDL_Log("%d %d %d %d", gx, gy, gh, gs);
       return best_guess;
    }
 
@@ -549,14 +718,13 @@ protected:
 
          // Realign, append a space and attempt to find the next word.
          x = m_detected_glyphs.back().x + m_estimated_stride;
+         x += m_estimated_stride * 6 / 10;
          Glyph g{
             .g = GLYPH_SPACE,
             .x = x,
             .y = y
          };
          
-         x += m_estimated_stride * 4 / 10;
-
          
          m_detected_glyphs.push_back(g);
          
@@ -610,6 +778,10 @@ private:
    int m_dy = 0;
 
    bool m_debug_stamp = false;
+
+   std::vector<cv::Vec4i> m_guess_params;
+   
+   std::shared_ptr<Text> m_font;
 
    cv::Mat m_data;
 };
@@ -708,6 +880,8 @@ int main(int argc, char* argv[]) {
    }
 
    //cap.release();
+
+   TscSampler::Dump();
 
    return 0;
 }
