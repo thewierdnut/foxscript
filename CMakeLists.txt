@@ -22,6 +22,7 @@ add_subdirectory(res)
 add_executable(foxscript
    foxscript.cxx
    
+   src/MainWindow.cxx
    src/Text.cxx
 )
 
