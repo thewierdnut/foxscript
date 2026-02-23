@@ -5,7 +5,11 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-add_compile_options(-fno-omit-frame-pointer)
+if (ENABLE_ASAN)
+   set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-omit-frame-pointer -fsanitize=address")
+   set (CMAKE_LINKER_FLAGS "${CMAKE_LINKER_FLAGS} -fno-omit-frame-pointer -fsanitize=address")
+endif()
+
 
 find_package(OpenCV REQUIRED)
 find_package(SDL2 REQUIRED)
@@ -24,6 +28,7 @@ add_executable(foxscript
    
    src/MainWindow.cxx
    src/Text.cxx
+   src/ZoomGesture.cxx
 )
 
 target_link_libraries(foxscript
