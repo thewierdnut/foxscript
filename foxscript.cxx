@@ -1,6 +1,29 @@
 #include "src/MainWindow.hh"
+#include "src/VideoCaptureV4L2.hh"
 #include "src/ZoomGesture.hh"
 
+#include <fstream>
+
+
+uint8_t square[] = { // yuyv, u and v are thrown away, y is thesholded
+   "                                "
+   "                                "
+   "                                "
+   "                                "
+   "        z z z z z z z z         "
+   "        z z z z z z z z         "
+   "        z z z z z z z z         "
+   "        z z z z z z z z         "
+   "        z z z z z z z z         "
+   "        z z z z z z z z         "
+   "        z z z z z z z z         "
+   "        z z z z z z z z         "
+   "                                "
+   "                                "
+   "                                "
+   "                                "
+};
+constexpr size_t SQUARE_SIZE = 16;
 
 
 int EventFilter(void* userdata, SDL_Event* event)
@@ -19,15 +42,17 @@ int EventFilter(void* userdata, SDL_Event* event)
 	return 1;
 }
 
-int main(int argc, char* argv[]) {
+int main(int argc, char* argv[])
+{
    // Initialize OpenCV Camera
-   cv::VideoCapture cap(0);
-   if (!cap.isOpened()) {
+   VideoCaptureV4L2 cap;
+   if (!cap.Open(0))
+   {
       std::cerr << "Error: Could not open camera." << std::endl;
       return -1;
    }
-   int frame_width = cap.get(cv::CAP_PROP_FRAME_WIDTH);
-   int frame_height = cap.get(cv::CAP_PROP_FRAME_HEIGHT);
+   int frame_width = cap.Width();
+   int frame_height = cap.Height();
 
    int debug = 0;
 
@@ -99,10 +124,12 @@ int main(int argc, char* argv[]) {
                case 1:
                   frame = cv::imread("/home/rian/Downloads/IMG_20260216_090246644_AE~2.jpg");
                   cv::resize(frame, frame, {frame_width, frame_height}, cv::INTER_CUBIC);
+                  cv::cvtColor(frame, frame, cv::COLOR_BGR2YUV_YUYV);
                   break;
                case 2:
                   frame = cv::imread("/home/rian/Downloads/IMG_20260219_132357937_AE~2.jpg");
                   cv::resize(frame, frame, {frame_width, frame_height}, cv::INTER_CUBIC);
+                  cv::cvtColor(frame, frame, cv::COLOR_BGR2YUV_YUYV);
                   break;
                default:
                   debug = 0;
@@ -126,9 +153,37 @@ int main(int argc, char* argv[]) {
       if (!window.Paused() || dirty)
       {
          if (debug == 0)
-            cap >> frame;
-         if (!frame.empty())
-            window.Updatetexture(frame);
+         {
+            // cap >> frame;
+            void* p = cap.GetFrame();
+            if (p)
+               window.UpdateTexture(p, cap.Stride());
+         }
+         else if (debug == 1)
+         {
+            if (!frame.empty())
+            {
+               window.UpdateTexture(&frame.at<uint8_t>(), frame.cols * 2);
+               // static bool dd = true;
+               // if (dd)
+               // {
+               //    dd = false;
+               //    std::ofstream out("debug.ppm", std::ios::binary);
+               //    out << "P6\n";
+               //    out << frame.cols << " " << frame.rows << '\n';
+               //    out << "255\n";
+               //    uint8_t* p = &frame.at<uint8_t>();
+               //    for (int i = 0; i < frame.cols * frame.rows; ++i, p+=2)
+               //    {
+               //       out.put(*p);
+               //       out.put(*p);
+               //       out.put(*p);
+               //    }
+               // }
+            }
+         }
+         // if (!frame.empty())
+         //    window.UpdateTexture(frame);
 
          dirty = false;
       }
@@ -136,7 +191,7 @@ int main(int argc, char* argv[]) {
       window.Draw();
    }
 
-   cap.release();
+   cap.Close();
 
    // TscSampler::Dump();
 

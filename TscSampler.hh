@@ -6,6 +6,8 @@
 #include <cassert>
 #include <iostream>
 
+#include <x86intrin.h>
+
 class TscSampler
 {
 public:

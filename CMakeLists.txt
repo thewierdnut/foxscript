@@ -29,6 +29,7 @@ add_executable(foxscript
    src/MainWindow.cxx
    src/Text.cxx
    src/ZoomGesture.cxx
+   src/VideoCaptureV4L2.cxx
 )
 
 target_link_libraries(foxscript
@@ -36,4 +37,17 @@ target_link_libraries(foxscript
    SDL2::SDL2
    z
    res
+)
+
+
+add_executable(v4l2_test
+   v4l2_test.cxx
+   
+   
+   # src/VideoCaptureV4L2.cxx
+   src/Contours.cxx
+)
+
+target_link_libraries(v4l2_test
+   ${OpenCV_LIBS}
 )
