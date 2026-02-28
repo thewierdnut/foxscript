@@ -11,7 +11,6 @@ if (ENABLE_ASAN)
 endif()
 
 
-find_package(OpenCV REQUIRED)
 find_package(SDL2 REQUIRED)
 
 include_directories(foxscript PUBLIC
@@ -30,24 +29,23 @@ add_executable(foxscript
    src/Text.cxx
    src/ZoomGesture.cxx
    src/VideoCaptureV4L2.cxx
+   src/Image.cxx
 )
 
 target_link_libraries(foxscript
-   ${OpenCV_LIBS}
    SDL2::SDL2
    z
    res
 )
 
 
-add_executable(v4l2_test
-   v4l2_test.cxx
-   
-   
-   # src/VideoCaptureV4L2.cxx
-   src/Contours.cxx
-)
-
-target_link_libraries(v4l2_test
-   ${OpenCV_LIBS}
-)
+# add_executable(v4l2_test
+#    v4l2_test.cxx
+#
+#
+#    # src/VideoCaptureV4L2.cxx
+# )
+#
+# target_link_libraries(v4l2_test
+#    ${OpenCV_LIBS}
+# )

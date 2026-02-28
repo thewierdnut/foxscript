@@ -1,29 +1,9 @@
+#include "src/Image.hh"
 #include "src/MainWindow.hh"
 #include "src/VideoCaptureV4L2.hh"
 #include "src/ZoomGesture.hh"
 
 #include <fstream>
-
-
-uint8_t square[] = { // yuyv, u and v are thrown away, y is thesholded
-   "                                "
-   "                                "
-   "                                "
-   "                                "
-   "        z z z z z z z z         "
-   "        z z z z z z z z         "
-   "        z z z z z z z z         "
-   "        z z z z z z z z         "
-   "        z z z z z z z z         "
-   "        z z z z z z z z         "
-   "        z z z z z z z z         "
-   "        z z z z z z z z         "
-   "                                "
-   "                                "
-   "                                "
-   "                                "
-};
-constexpr size_t SQUARE_SIZE = 16;
 
 
 int EventFilter(void* userdata, SDL_Event* event)
@@ -48,25 +28,13 @@ int main(int argc, char* argv[])
    VideoCaptureV4L2 cap;
    if (!cap.Open(0))
    {
-      std::cerr << "Error: Could not open camera." << std::endl;
+      SDL_Log("Error: Could not open camera.");
       return -1;
    }
    int frame_width = cap.Width();
    int frame_height = cap.Height();
 
    int debug = 0;
-
-
-   cv::Mat frame;
-   bool dirty = true;
-   // // frame = cv::imread("/home/rian/Downloads/IMG_20260216_090246644_AE~2.jpg");
-   // frame = cv::imread("/home/rian/Downloads/IMG_20260219_132357937_AE~2.jpg");
-   // cv::resize(frame, frame, {frame.cols / 4, frame.rows / 4}, cv::INTER_CUBIC);
-   // auto t = frame.type();
-   //
-   // int frame_width = frame.cols;
-   // int frame_height = frame.rows;
-
 
    // For android, game loop does not run on the main thread, and some of these
    // events need handled from within the java callback context. Handle them
@@ -76,6 +44,8 @@ int main(int argc, char* argv[])
    SDL_SetEventFilter(EventFilter, nullptr);
    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0"); // turn off mouse emulation
    SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "0"); // turn off mouse emulation
+
+   Image test_img(frame_width, frame_height);
 
    MainWindow window;
 
@@ -122,17 +92,14 @@ int main(int argc, char* argv[])
                switch(++debug)
                {
                case 1:
-                  frame = cv::imread("/home/rian/Downloads/IMG_20260216_090246644_AE~2.jpg");
-                  cv::resize(frame, frame, {frame_width, frame_height}, cv::INTER_CUBIC);
-                  cv::cvtColor(frame, frame, cv::COLOR_BGR2YUV_YUYV);
+                  test_img.Load("test_img_1.png");
                   break;
                case 2:
-                  frame = cv::imread("/home/rian/Downloads/IMG_20260219_132357937_AE~2.jpg");
-                  cv::resize(frame, frame, {frame_width, frame_height}, cv::INTER_CUBIC);
-                  cv::cvtColor(frame, frame, cv::COLOR_BGR2YUV_YUYV);
+                  test_img.Load("test_img_2.png");
                   break;
                default:
                   debug = 0;
+                  break;
                }
             }
             break;
@@ -150,42 +117,19 @@ int main(int argc, char* argv[])
 
       // Capture new frame
       // if (!paused)
-      if (!window.Paused() || dirty)
+      if (!window.Paused())
       {
-         if (debug == 0)
+
+         if (debug != 0)
          {
-            // cap >> frame;
+            window.UpdateTexture(test_img.Data(), test_img.Pitch());
+         }
+         else
+         {
             void* p = cap.GetFrame();
             if (p)
                window.UpdateTexture(p, cap.Stride());
          }
-         else if (debug == 1)
-         {
-            if (!frame.empty())
-            {
-               window.UpdateTexture(&frame.at<uint8_t>(), frame.cols * 2);
-               // static bool dd = true;
-               // if (dd)
-               // {
-               //    dd = false;
-               //    std::ofstream out("debug.ppm", std::ios::binary);
-               //    out << "P6\n";
-               //    out << frame.cols << " " << frame.rows << '\n';
-               //    out << "255\n";
-               //    uint8_t* p = &frame.at<uint8_t>();
-               //    for (int i = 0; i < frame.cols * frame.rows; ++i, p+=2)
-               //    {
-               //       out.put(*p);
-               //       out.put(*p);
-               //       out.put(*p);
-               //    }
-               // }
-            }
-         }
-         // if (!frame.empty())
-         //    window.UpdateTexture(frame);
-
-         dirty = false;
       }
 
       window.Draw();
