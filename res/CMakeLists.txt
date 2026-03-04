@@ -47,6 +47,8 @@ endmacro()
 addfile(text_24.png)
 addfile(pause.png)
 addfile(play.png)
+addfile(test_img_1.png)
+addfile(test_img_2.png)
 
 
 file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/res.cxx "

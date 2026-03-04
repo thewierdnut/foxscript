@@ -19,7 +19,7 @@ public:
 
    int Width() const { return m_devices[m_dev_idx].format.width; }
    int Height() const { return m_devices[m_dev_idx].format.height; }
-   int Stride() const { return m_stride; }
+   int Pitch() const { return m_pitch; }
 
    // Always YUYV (YUY2) format.
    void* GetFrame();
@@ -51,6 +51,6 @@ private:
 
    int m_fd = -1;
    int m_dev_idx = -1;
-   int m_stride = -1;
+   int m_pitch = -1;
    // int m_rgb_stride = -1;
 };

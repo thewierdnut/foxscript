@@ -1,26 +1,27 @@
 #include "MainWindow.hh"
 
 #include "Text.hh"
-#include "TscSampler.hh"
+//#include "TscSampler.hh"
 
 #include <SDL2/SDL.h>
 
 #include <algorithm>
+#include <cassert>
 
 namespace
 {
    constexpr size_t WIDTH = 640;
    constexpr size_t HEIGHT = 480;
    constexpr int LINE_THICKNESS = 5;
-   constexpr uint8_t THRESHOLD = 48;
+   constexpr uint8_t THRESHOLD = 64;
 
    // Initial guess at the size of the runes.
-   constexpr int INITIAL_STRIDE = 38;
-   constexpr int INITIAL_HEIGHT = 64;
+   constexpr int RATIO_WIDTH = 60;   // Runes are typically 60% as wide as they are tall
+   constexpr int RATIO_HEIGHT = 100;
 
    // How much to vary the size and height to find them.
-   constexpr int STRIDE_VARIANCE = 12;
-   constexpr int HEIGHT_VARIANCE = 20;
+   constexpr int STRIDE_VARIANCE = 24;
+   constexpr int HEIGHT_VARIANCE = 40;
 
    // Special glyph value representing a space
    constexpr uint16_t GLYPH_SPACE = 0xffff;
@@ -40,11 +41,27 @@ namespace
    //             /        |        \
    //          /           |           \
    // (-50,-30)            |            (50,-30)
-   //         |\           |          /|
-   //         |   \        |        /   |
-   //         |      \     |     /      |
-   //         |        ( 0, -15)        |
-   // (-50,-10)                         (50,-10)
+   //         |\           |          /
+   //         |   \        |        /
+   //         |      \     |     /
+   //         |        ( 0, -15)
+   // (-50,-10)
+   // -----------------------------------------
+   //
+   // (-50, 20)
+   //         |        ( 0,  25)
+   //         |      /     |     \
+   //         |   /        |        \
+   //         |/           |           \
+   // (-50, 40)            |            (50, 40)
+   //          \           |           /
+   //             \        |        /
+   //                \     |     /
+   //                  ( 0,  55)
+   //                    -----
+   //                   |0, 60|
+   //                    -----
+   //
    constexpr int GLYPH_SCALE = 100;
    constexpr SegmentInfo SEGMENTS[12] = {
       {{ 50,-30}, { 00,-45}}, // Vowels, Outside edge, counterclockwise from top right.
@@ -249,23 +266,25 @@ MainWindow::MainWindow():
 
    // Prepopulate the parameters we vary to find the glyphs, since they
    // should be sorted by how "abnormal" they are.
-   for (int dx = -6; dx <= 6; dx += 2)
+   for (int dx = -12; dx <= 12; dx += 2)
    {
-      for (int dy = -6; dy <= 6; dy += 2)
+      for (int dy = -12; dy <= 12; dy += 2)
       {
-         for (int stride = INITIAL_STRIDE - STRIDE_VARIANCE; stride < INITIAL_STRIDE + STRIDE_VARIANCE; stride += 2)
+         // Ratio to height, which is typically around 60%, varied by 5%
+         for (int ratio = (int)(PARAM_DEN * .55); ratio < (int)(PARAM_DEN * .65); ratio += 1)
          {
-            for (int height = INITIAL_HEIGHT - HEIGHT_VARIANCE; height < INITIAL_HEIGHT + HEIGHT_VARIANCE; height += 2)
+            // How much to vary the size, varied by 50%
+            for (int height = (int)(PARAM_DEN * .5); height < (int)(PARAM_DEN * 1.5); height += 4)
             {
-               m_guess_params.push_back({dx, dy, stride, height});
+               m_guess_params.push_back({dx, dy, ratio, height});
             }
          }
       }
    }
    std::sort(m_guess_params.begin(), m_guess_params.end(),
       [](const Params& a, const Params& b) {
-         return abs(a.dx) + abs(a.dy) + abs(a.ds - INITIAL_STRIDE) + abs(a.dy - INITIAL_HEIGHT)
-               < abs(b.dx) + abs(b.dy) + abs(b.ds - INITIAL_STRIDE) + abs(b.dy - INITIAL_HEIGHT);
+         return abs(a.dx) + abs(a.dy) + abs(a.ratio - 70) + abs(a.scale - 100)
+               < abs(b.dx) + abs(b.dy) + abs(b.ratio - 70) + abs(b.scale - 100);
       }
    );
 
@@ -276,7 +295,7 @@ MainWindow::MainWindow():
 
 MainWindow::~MainWindow()
 {
-   TscSampler::Dump();
+   // TscSampler::Dump(); //x86_64 only
    SDL_Quit();
 }
 
@@ -289,21 +308,29 @@ bool MainWindow::Create(size_t frame_width, size_t frame_height)
 
    // Initialize SDL
    if (SDL_Init(SDL_INIT_VIDEO) < 0) {
-      std::cerr << "SDL could not initialize! SDL_Error: " << SDL_GetError() << std::endl;
+      SDL_Log("SDL could not initialize! SDL_Error: %s", SDL_GetError());
       return false;
    }
 
-   m_window.reset(SDL_CreateWindow("OpenCV + SDL2 Stream",
+   m_window.reset(SDL_CreateWindow("foxscript",
                                  SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                                  WIDTH, HEIGHT, SDL_WINDOW_SHOWN|SDL_WINDOW_RESIZABLE),
                   SDL_DestroyWindow);
    if (!m_window)
       return false;
 
+   // Get the actual size. I would expect a resize event, but that doesn't seem
+   // to happen.
+   int initialized_width = WIDTH;
+   int initialized_height = HEIGHT;
+   SDL_GetWindowSize(m_window.get(), &initialized_width, &initialized_height);
+   Resize(initialized_width, initialized_height);
+
    m_renderer.reset(SDL_CreateRenderer(m_window.get(), -1, SDL_RENDERER_ACCELERATED),
                      SDL_DestroyRenderer);
    if (!m_renderer)
       return false;
+   
 
    SDL_SetRenderDrawBlendMode(m_renderer.get(), SDL_BLENDMODE_BLEND);
 
@@ -314,6 +341,25 @@ bool MainWindow::Create(size_t frame_width, size_t frame_height)
 
    m_font.reset(new Text(m_renderer, "text_24.png"));
 
+   
+   auto cres = GetResource("circle.png");
+   if (cres.first)
+   {
+      std::vector<uint8_t> cbytes;
+      unsigned long width = 0;
+      unsigned long height = 0;
+      if (decodePNG(cbytes, width, height, cres.first, cres.second))
+      {
+         throw std::runtime_error("Unable to load circle.png");
+      }
+      // Create a texture for the vowel order circle
+      m_circle_texture.reset(SDL_CreateTexture(m_renderer.get(), SDL_PIXELFORMAT_RGBA8888,
+                                 SDL_TEXTUREACCESS_STATIC, width, height),
+                     SDL_DestroyTexture);
+      SDL_SetTextureBlendMode(m_circle_texture.get(), SDL_BLENDMODE_BLEND);
+      SDL_UpdateTexture(m_circle_texture.get(), nullptr, cbytes.data(), width * 4);
+   }
+
    return true;
 }
 
@@ -321,7 +367,7 @@ void MainWindow::UpdateTexture(void* p, int pitch)
 {
    // Update texture with OpenCV frame data
    // TODO: gemini lied to me. We should use SDL_LockTexture here.
-   // SDL_UpdateTexture(m_texture.get(), NULL, p, pitch);
+   SDL_UpdateTexture(m_texture.get(), NULL, p, pitch);
    
    // Run threshold algorithm on Y channels
    uint8_t* y = (uint8_t*)p;
@@ -359,7 +405,7 @@ void MainWindow::UpdateTexture(void* p, int pitch)
       else
          ++it;
    }
-   SDL_UpdateTexture(m_texture.get(), NULL, p, pitch);
+   
    ScanForGlyphs();
 }
 
@@ -369,26 +415,22 @@ void MainWindow::Draw()
    SDL_SetRenderDrawColor(m_renderer.get(), 0, 0, 0, 255);
    SDL_RenderClear(m_renderer.get());
 
-   // cv::Mat color;
-   // cv::cvtColor(m_data, color, cv::COLOR_GRAY2BGR);
-   // SDL_UpdateTexture(m_texture.get(), NULL, m_yuv_data, m_frame_width * 2);
-   SDL_UpdateTexture(m_texture.get(), NULL, m_yuv_data, m_frame_pitch);
-
+   // Need this for stamp to work
    SDL_RenderCopy(m_renderer.get(), m_texture.get(), NULL, &m_dst_rect);
 
-   // Debug, drawing shape rects
-   SDL_SetRenderDrawColor(m_renderer.get(), 0, 0, 255, 128);
-   for (const SDL_Rect& r: m_word_rects)
-   {
-      // These are in image coordinates.
-      SDL_Rect rs{
-         .x = ImgToScreen(r.x) + m_dst_rect.x,
-         .y = ImgToScreen(r.y) + m_dst_rect.y,
-         .w = ImgToScreen(r.w),
-         .h = ImgToScreen(r.h)
-      };
-      SDL_RenderFillRect(m_renderer.get(), &rs);
-   }
+   // // Debug, drawing shape rects
+   // SDL_SetRenderDrawColor(m_renderer.get(), 0, 0, 255, 128);
+   // for (const SDL_Rect& r: m_word_rects)
+   // {
+   //    // These are in image coordinates.
+   //    SDL_Rect rs{
+   //       .x = ImgToScreen(r.x) + m_dst_rect.x,
+   //       .y = ImgToScreen(r.y) + m_dst_rect.y,
+   //       .w = ImgToScreen(r.w),
+   //       .h = ImgToScreen(r.h)
+   //    };
+   //    SDL_RenderFillRect(m_renderer.get(), &rs);
+   // }
 
    // Horizontal baseline;
    SDL_SetRenderDrawColor(m_renderer.get(), 255, 0, 0, 64);
@@ -408,12 +450,16 @@ void MainWindow::Draw()
       .h = m_estimated_height + LINE_THICKNESS
    };
    SDL_RenderFillRect(m_renderer.get(), &vertline);
+   vertline.y = horzline.y - m_initial_height / 2;
+   vertline.h = m_initial_height + LINE_THICKNESS;
+   SDL_RenderFillRect(m_renderer.get(), &vertline);
+
 
    // Glyph overlay and translated text
    if (!m_detected_glyphs.empty())
    {
       SDL_Point text_pos{
-         .y = horzline.y + INITIAL_HEIGHT
+         .y = horzline.y + m_initial_height
       };
 
       SDL_Rect text_background{
@@ -422,7 +468,7 @@ void MainWindow::Draw()
          .w = horzline.w,
          .h = m_font->Height() * 2
       };
-      SDL_SetRenderDrawColor(m_renderer.get(), 0, 0, 0, 64);
+      SDL_SetRenderDrawColor(m_renderer.get(), 0, 0, 0, 128);
       SDL_RenderFillRect(m_renderer.get(), &text_background);
 
       
@@ -434,13 +480,13 @@ void MainWindow::Draw()
 
          if (space)
          {
-            if (text_pos.x + m_font->Stride() > g.x - INITIAL_STRIDE/2)
+            if (text_pos.x + m_font->Stride() > g.x - m_initial_stride/2)
             {
                text_pos.x += m_font->Stride();
             }
             else
             {
-               text_pos.x = g.x - INITIAL_STRIDE/2;
+               text_pos.x = g.x - m_initial_stride/2;
             }
             space = false;
          }
@@ -464,6 +510,20 @@ void MainWindow::Draw()
          }
       }
    }
+   // else
+   // {
+   //    int x = m_window_size.x / 4;
+   //    int y = m_window_size.y / 2;
+   //    SDL_SetRenderDrawColor(m_renderer.get(), 0, 255, 0, 128);
+
+   //    SDL_Rect initial_guess{
+   //       .x = x - m_initial_stride / 2,
+   //       .y = y - m_initial_height / 2,
+   //       .w = m_initial_stride,
+   //       .h = m_initial_height
+   //    };
+   //    SDL_RenderFillRect(m_renderer.get(), &initial_guess);
+   // }
 
    // If we saw a glyph that was invalid, chances are we detected part of a
    // good one. Show it so that the user knows they are close to matching.
@@ -501,9 +561,15 @@ void MainWindow::Resize(int new_width, int new_height)
 
    m_window_size.x = new_width;
    m_window_size.y = new_height;
+   m_initial_height = new_height / 6;
+   m_initial_stride = m_initial_height * RATIO_WIDTH / RATIO_HEIGHT;
+   m_estimated_height = m_initial_height;
+   m_estimated_stride = m_initial_stride;
 
-   m_play.SetPosition(SDL_Point{new_width - 64, new_height - 64});
-   m_pause.SetPosition(SDL_Point{new_width - 64, new_height - 64});
+   m_play.SetPosition(SDL_Rect{new_width - m_initial_height, new_height - m_initial_height, m_initial_height, m_initial_height});
+   m_pause.SetPosition(SDL_Rect{new_width - m_initial_height, new_height - m_initial_height, m_initial_height, m_initial_height});
+
+   ScanForGlyphs();
 }
 
 void MainWindow::Translate(int dx, int dy)
@@ -570,7 +636,7 @@ bool MainWindow::FingerUp(const SDL_Point& p, int fid)
    return MouseUp(p, fid);
 }
 
-bool MainWindow::FingerMotion(const SDL_Point& p, int fid)
+bool MainWindow::FingerMotion(const SDL_Point& p, const SDL_Point& dp, int fid)
 {
    if (zg.FingerMove(p, fid))
    {
@@ -580,9 +646,11 @@ bool MainWindow::FingerMotion(const SDL_Point& p, int fid)
          },
          m_zoom * zg.Zoom()
       );
+      MouseMotion(zg.CenterDelta(), SDL_BUTTON_LMASK);
       return true;
    }
-   return MouseMotion(p, SDL_BUTTON_LMASK);
+   SDL_Log("FingerMotion(%d, %d)", dp.x, dp.y);
+   return MouseMotion(dp, SDL_BUTTON_LMASK);
 }
 
 // x and y are in screen coordinates
@@ -636,35 +704,35 @@ void MainWindow::RenderGlyph(const Glyph& g, uint8_t cr, uint8_t cg, uint8_t cb)
       // This is supposed to be a circle, but SDL has no primitive to do
       // that. Probably need to manually fill a texture, then blit it here.
       SDL_Rect rect{
-         .x = g.x + VOWEL_FIRST.x * g.stride / GLYPH_SCALE - LINE_THICKNESS,
-         .y = g.y + VOWEL_FIRST.y * g.height / GLYPH_SCALE - LINE_THICKNESS,
-         .w = LINE_THICKNESS * 2,
-         .h = LINE_THICKNESS * 2,
+         .x = g.x + VOWEL_FIRST.x * g.stride / GLYPH_SCALE - 6,
+         .y = g.y + VOWEL_FIRST.y * g.height / GLYPH_SCALE - 6,
+         .w = 12,
+         .h = 12,
       };
-
-      SDL_RenderFillRect(m_renderer.get(), &rect);
+      SDL_SetTextureColorMod(m_circle_texture.get(), cr, cg, cb);
+      SDL_RenderCopy(m_renderer.get(), m_circle_texture.get(), nullptr, &rect);
    }
-
 }
 
 // x, y, stride, height given in screen units.
 // @returns glyph mask, number of sampled black pixels.
-std::pair<uint16_t, size_t> MainWindow::SampleGlyph(int x, int y, int stride, int height)
+size_t MainWindow::SampleGlyph(Glyph& g)
 {
    //TscSampler ts("sg");
    //uint16_t accuracy = 0;
-   uint16_t glyph = 0;
-   int px = ScreenToImg(x - m_dst_rect.x);
-   int py = ScreenToImg(y - m_dst_rect.y);
+   g.g = 0;
+   int px = ScreenToImg(g.x - m_dst_rect.x);
+   int py = ScreenToImg(g.y - m_dst_rect.y);
 
-   int p_stride = ScreenToImg(stride);
-   int p_height = ScreenToImg(height);
+   int p_stride = ScreenToImg(g.stride);
+   int p_height = ScreenToImg(g.height);
 
    // Don't read off the edge of the picture.
-   if (p_stride * 2 > px || px > m_frame_width - p_stride * 2 ||
-         p_height * 2 > py || py > m_frame_height - p_height * 3)
-      return {0, 0};
-   
+   if (p_stride * 3 / 2 > px || px > m_frame_width - p_stride * 3 / 2 ||
+         p_height * 3 / 2 > py || py > m_frame_height - p_height * 3 / 2)
+   {
+      return 0;
+   }
    // For each segment position, sample three pixels and 30, 50, and 70%
    // of the line segment. If they are all dark, then assume the line
    // segment is drawn.
@@ -765,7 +833,7 @@ std::pair<uint16_t, size_t> MainWindow::SampleGlyph(int x, int y, int stride, in
       //    {(s.p1.x *14 + s.p2.x * 2) / 16, (s.p1.y *14 + s.p2.y * 2) / 16},
       //    // {(s.p1.x *15 + s.p2.x * 1) / 16, (s.p1.y *15 + s.p2.y * 1) / 16},
       // };
-      // const cv::Point sp[] = {
+      // const SDL_Point sp[] = {
       //    {(s.p1.x * 1 + s.p2.x * 7) / 8, (s.p1.y * 1 + s.p2.y * 7) / 8},
       //    {(s.p1.x * 2 + s.p2.x * 6) / 8, (s.p1.y * 2 + s.p2.y * 6) / 8},
       //    {(s.p1.x * 3 + s.p2.x * 5) / 8, (s.p1.y * 3 + s.p2.y * 5) / 8},
@@ -787,9 +855,12 @@ std::pair<uint16_t, size_t> MainWindow::SampleGlyph(int x, int y, int stride, in
       const uint32_t sample_points = sizeof(sp)/sizeof(*sp);
       for (auto& p: sp)
       {
-         l += Pixel(p.x, p.y) < 64;
+         l += Pixel(p.x, p.y) <= 128;
          // if (m_debug_stamp)
-         //    m_data.at<uint8_t>(p.y, p.x) = 100;
+         // {
+         //    Pixel(p.x, p.y) = Pixel(p.x, p.y) <= 128 ? 127 : 129;
+         // }
+            
       }
 
       // uint8_t l1 = luminance(s1x, s1y);
@@ -801,33 +872,58 @@ std::pair<uint16_t, size_t> MainWindow::SampleGlyph(int x, int y, int stride, in
       if (l == sample_points) //* 3 / 4)
       {
          black_pixels += l;
-         glyph |= (1 << i);
+         g.g |= (1 << i);
       }
    }
 
    // Sample at the vowel/consanant swap marker. This is drawn as a circle.
-   int circle_pixels = 0;
-
    int cx = px + VOWEL_FIRST.x * p_stride / GLYPH_SCALE;
    int cy = py + VOWEL_FIRST.y * p_height / GLYPH_SCALE;
-   for (int i = -LINE_THICKNESS; i < LINE_THICKNESS; ++i)
+   const int thickness = ScreenToImg(LINE_THICKNESS)*3/4;
+
+   int outer[4] = {};
+   int hole = 0;
+   int inner[4] = {};
+   
+   for (int i = -thickness; i < thickness; ++i)
    {
-      if (-1 <= i && i <= 1)
+      if (i < -2)
       {
-         if (Pixel(cx + i, cy + LINE_THICKNESS) > 192)
-         {
-            ++circle_pixels;
-         }
+         if (Pixel(cx + i, cy)     < 64) ++outer[0];
+         if (Pixel(cx, cy + i)     < 64) ++outer[1];
+         if (Pixel(cx + i, cy + i) < 64) ++outer[2];
+         if (Pixel(cx + i, cy - i) < 64) ++outer[3];
+            
       }
-      else if (Pixel(cx + i, cy + LINE_THICKNESS) < 64)
+      else if (i <= 2)
       {
-         ++circle_pixels;
+         if (Pixel(cx + i, cy) > 192) ++hole;
+         if (Pixel(cx, cy + i) > 192) ++hole;
       }
+      else
+      {
+         if (Pixel(cx + i, cy)     < 64) ++inner[0];
+         if (Pixel(cx, cy + i)     < 64) ++inner[1];
+         if (Pixel(cx + i, cy + i) < 64) ++inner[2];
+         if (Pixel(cx + i, cy - i) < 64) ++inner[3];
+      }
+
+      // if (m_debug_stamp)
+      // {
+      //    Pixel(cx + i, cy)     = 128;
+      //    Pixel(cx, cy + i)     = 128;
+      //    Pixel(cx + i, cy + i) = 128;
+      //    Pixel(cx + i, cy - i) = 128;
+      // }
    }
-   if (circle_pixels > LINE_THICKNESS)
+   if (hole > 4 &&
+       outer[0] && outer[1] && outer[2] && outer[3] &&
+       inner[0] && inner[1] && inner[2] && inner[3])
    {
-      glyph |= (1 << 12);
-      black_pixels += circle_pixels;
+      g.g |= (1 << 12);
+      for (int i = 0; i < 4; ++i)
+         black_pixels += inner[i] + outer[i];
+      black_pixels += hole;
       // std::string sample_line;
       // for (int i = -LINE_THICKNESS; i < LINE_THICKNESS; ++i)
       // {
@@ -836,7 +932,49 @@ std::pair<uint16_t, size_t> MainWindow::SampleGlyph(int x, int y, int stride, in
       // SDL_Log("Circle at %d %d %s", cx, cy, sample_line.c_str());
    }
 
-   return {glyph, black_pixels};
+   // int outer = 0;
+   // int inner = 0;
+
+   // inner += Pixel(cx, cy) > 128;
+   // inner += Pixel(cx-1, cy) > 128;
+   // inner += Pixel(cx, cy-1) > 128;
+   // inner += Pixel(cx+1, cy) > 128;
+   // inner += Pixel(cx, cy+1) > 128;
+
+   // outer += Pixel(cx-thickness, cy) < 128;
+   // outer += Pixel(cx, cy-thickness) < 128;
+   // outer += Pixel(cx+thickness, cy) < 128;
+   // outer += Pixel(cx, cy+thickness) < 128;
+
+   // int sqrt2over2ish = thickness * 3 / 4;
+   // outer += Pixel(cx-sqrt2over2ish, cy-sqrt2over2ish) < 128;
+   // outer += Pixel(cx+sqrt2over2ish, cy-sqrt2over2ish) < 128;
+   // outer += Pixel(cx+sqrt2over2ish, cy+sqrt2over2ish) < 128;
+   // outer += Pixel(cx-sqrt2over2ish, cy+sqrt2over2ish) < 128;
+   // if (m_debug_stamp)
+   // {
+   //    Pixel(cx, cy) = 192;
+   //    Pixel(cx-1, cy) = 192;
+   //    Pixel(cx, cy-1) = 192;
+   //    Pixel(cx+1, cy) = 192;
+   //    Pixel(cx, cy+1) = 192;
+
+   //    Pixel(cx-thickness, cy) = 64;
+   //    Pixel(cx, cy-thickness) = 64;
+   //    Pixel(cx+thickness, cy) = 64;
+   //    Pixel(cx, cy+thickness) = 64;
+   //    Pixel(cx-sqrt2over2ish, cy-sqrt2over2ish) = 64;
+   //    Pixel(cx+sqrt2over2ish, cy-sqrt2over2ish) = 64;
+   //    Pixel(cx+sqrt2over2ish, cy+sqrt2over2ish) = 64;
+   //    Pixel(cx-sqrt2over2ish, cy+sqrt2over2ish) = 64;
+   // }
+   // if (inner == 5 && outer == 8)
+   // {
+   //    g.g |= (1 << 12);
+   //    black_pixels |= 13;
+   // }
+
+   return black_pixels;
 }
 
 // @param x, y in screen coordinates
@@ -848,8 +986,8 @@ size_t MainWindow::ScanForGlyphSequence(int x, int y, std::vector<Glyph>& retgly
    // Limit our guessing to the rect containing our word
    const int ix = ScreenToImg(x - m_dst_rect.x);
    const int iy = ScreenToImg(y - m_dst_rect.y);
-   const int iheight = ScreenToImg(INITIAL_HEIGHT);
-   const int iwidth = ScreenToImg(INITIAL_STRIDE);
+   const int iheight = ScreenToImg(m_initial_height);
+   const int iwidth = ScreenToImg(m_initial_stride);
 
    int word_left = -100000;
    int word_right = -100000;
@@ -882,7 +1020,10 @@ size_t MainWindow::ScanForGlyphSequence(int x, int y, std::vector<Glyph>& retgly
    std::vector<Glyph> glyphs;
    for (auto& v: m_guess_params)
    {
-      int dx = v.dx, dy = v.dy, stride = v.ds, height = v.dh;
+      int dx = v.dx;
+      int dy = v.dy;
+      int height = m_initial_height * v.scale / PARAM_DEN;
+      int stride = height * v.ratio / PARAM_DEN;
       glyphs.clear();
       Glyph g{};
       g.x = x + dx;
@@ -892,8 +1033,8 @@ size_t MainWindow::ScanForGlyphSequence(int x, int y, std::vector<Glyph>& retgly
       size_t quality = 0;
       size_t quality_total = 0;
       Glyph bad_glyph{};
-      std::tie(g.g, quality) = SampleGlyph(g.x, g.y, stride, height);
-      while(g.g && g.x < word_right)
+      quality = SampleGlyph(g);
+      while(quality && g.x < word_right)
       {
          uint16_t vowel_idx = g.g & 63;
          uint16_t cons_idx = (g.g >> 6) & 63;
@@ -908,11 +1049,9 @@ size_t MainWindow::ScanForGlyphSequence(int x, int y, std::vector<Glyph>& retgly
          }
          quality_total += quality;
          glyphs.push_back(g);
-         
-
          g.x += stride;
          
-         std::tie(g.g, quality) = SampleGlyph(g.x, g.y, stride, height);
+         quality = SampleGlyph(g);
       }
 
       if (quality_total > best_guess)
@@ -1001,4 +1140,6 @@ void MainWindow::Zoom(const SDL_Point& pos, float z)
 
    m_scale.num = m_dst_rect.w;
    m_scale.den = m_frame_width;
+
+   ScanForGlyphs();
 }

@@ -11,6 +11,8 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 
+#include <SDL2/SDL_log.h>
+
 
 namespace {
    uint8_t Clamp(int v)
@@ -92,6 +94,11 @@ VideoCaptureV4L2::VideoCaptureV4L2()
       };
       while (ioctl(fd, VIDIOC_ENUM_FMT, &fmt) == 0)
       {
+         union {uint32_t i; char c[4];} fourcc{fmt.pixelformat};
+         SDL_Log("Device %d  %c%c%c%c",
+            i,
+            fourcc.c[0], fourcc.c[1], fourcc.c[2], fourcc.c[3]
+         );
          ++fmt.index;
          // Only support planar uncompressed formats, since I'm too lazy to
          // pull in a jpeg decompressor, and this is mostly just for testing.
@@ -155,7 +162,12 @@ VideoCaptureV4L2::VideoCaptureV4L2()
       }
 
       union {uint32_t i; char c[4];} fourcc{info.format.pixel_format};
-      std::cout << "   selected " << fourcc.c[0] << fourcc.c[1] << fourcc.c[2] << fourcc.c[3] << ' ' << info.format.width << 'x' << info.format.height << " @" << (float)info.format.rate.den / info.format.rate.num << "hz" <<  '\n';
+      SDL_Log("   selected %c%c%c%c %dx%d @%fhz",
+         fourcc.c[0], fourcc.c[1], fourcc.c[2], fourcc.c[3],
+         info.format.width,
+         info.format.height,
+         (float)info.format.rate.den / info.format.rate.num
+      );
 
       m_devices.push_back(info);
       
@@ -197,7 +209,7 @@ bool VideoCaptureV4L2::Open(size_t idx)
       return false;
    }
 
-   m_stride = fmt.fmt.pix.bytesperline;
+   m_pitch = fmt.fmt.pix.bytesperline;
 
    // m_rgb_stride = (fmt.fmt.pix.width * 3 + 7) / 8 * 8;
    // m_rgb_buffer.resize(m_rgb_stride * fmt.fmt.pix.height);
@@ -310,7 +322,7 @@ void* VideoCaptureV4L2::GetFrame()
 
    m_current_buffer = buffer.index;
    // TODO: Is it bad to assume that m_stride is Width() * 2 for YUYV data?
-   assert(m_stride == Width() * 2);
+   assert(m_pitch == Width() * 2);
    // YUYV_to_RGB24(m_buffers[buffer.index].p, m_rgb_buffer.data(), m_rgb_stride, Height());
 
    // ioctl(m_fd, VIDIOC_QBUF, &buffer);

@@ -32,10 +32,23 @@ public:
    bool MouseWheel(const SDL_Point& p, int s);
    bool FingerDown(const SDL_Point& p, int fid);
    bool FingerUp(const SDL_Point& p, int fid);
-   bool FingerMotion(const SDL_Point& p, int fid);
+   bool FingerMotion(const SDL_Point& p, const SDL_Point& dp, int fid);
 
    const SDL_Point& Size() const { return m_window_size; }
    
+
+   void Stamp()
+   {
+      // m_debug_stamp = true;
+      // Glyph g {
+      //    .x = m_window_size.x / 4,
+      //    .y = m_window_size.y / 2,
+      //    .height = m_initial_height,
+      //    .stride = m_initial_stride,
+      // };
+      // SampleGlyph(g);
+      // m_debug_stamp = false;
+   }
 
 protected:
    struct Glyph
@@ -54,9 +67,10 @@ protected:
    int ScreenToImg(int x) { return x * m_scale.den / m_scale.num; }
    int ImgToScreen(int x) { return x * m_scale.num / m_scale.den; }
 
-   // x, y, stride, height given in screen units.
-   // @returns glyph mask, number of sampled black pixels.
-   std::pair<uint16_t, size_t> SampleGlyph(int x, int y, int stride, int height);
+   // Caller fills out the glyph position and size, and then this function
+   // sets the glyph. The return value is how many sample points matched the
+   // glyph, so the higher the better, but zero indicates no match.
+   size_t SampleGlyph(Glyph& g);
 
    // @param x, y in screen coordinates
    // @param has_space give the horizontal coordinate more leeway since its a
@@ -81,9 +95,12 @@ private:
    std::shared_ptr<SDL_Window> m_window;
    std::shared_ptr<SDL_Renderer> m_renderer;
    std::shared_ptr<SDL_Texture> m_texture;
+   std::shared_ptr<SDL_Texture> m_circle_texture;
 
    SDL_Rect m_dst_rect{};
    SDL_Point m_window_size{};
+   int m_initial_height = 64;
+   int m_initial_stride = 38;
    int m_frame_width = 640;
    int m_frame_height = 480;
    int m_frame_pitch = 480;
@@ -101,11 +118,12 @@ private:
 
    struct Params
    {
-      int dx;
-      int dy;
-      int ds;
-      int dh;
+      int dx;     /// x delta from target position.
+      int dy;     /// y delta from target position.
+      int ratio;  /// The fraction out of 128 the width is from the height.
+      int scale;  /// The fraction out of 128 the height varies from the initial guess.
    };
+   static constexpr int PARAM_DEN = 128; // Keep this at a power of two for fast math.
    std::vector<Params> m_guess_params;
    
    std::shared_ptr<Text> m_font;

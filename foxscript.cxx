@@ -1,7 +1,12 @@
 #include "src/Image.hh"
 #include "src/MainWindow.hh"
-#include "src/VideoCaptureV4L2.hh"
 #include "src/ZoomGesture.hh"
+
+#ifndef __ANDROID__
+#include "src/VideoCaptureV4L2.hh"
+#else
+#include "src/VideoCaptureAndroid.hh"
+#endif
 
 #include <fstream>
 
@@ -24,8 +29,12 @@ int EventFilter(void* userdata, SDL_Event* event)
 
 int main(int argc, char* argv[])
 {
-   // Initialize OpenCV Camera
+   // Initialize Camera
+#ifndef __ANDROID__
    VideoCaptureV4L2 cap;
+#else
+   VideoCaptureAndroid cap;
+#endif
    if (!cap.Open(0))
    {
       SDL_Log("Error: Could not open camera.");
@@ -34,7 +43,12 @@ int main(int argc, char* argv[])
    int frame_width = cap.Width();
    int frame_height = cap.Height();
 
-   int debug = 0;
+   SDL_Log("frame_width: %d, frame_height: %d", frame_width, frame_height);
+
+   int debug = 1;
+   Image test_img(frame_width, frame_height);
+   test_img.Load("test_img_1.png");
+
 
    // For android, game loop does not run on the main thread, and some of these
    // events need handled from within the java callback context. Handle them
@@ -44,8 +58,6 @@ int main(int argc, char* argv[])
    SDL_SetEventFilter(EventFilter, nullptr);
    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0"); // turn off mouse emulation
    SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "0"); // turn off mouse emulation
-
-   Image test_img(frame_width, frame_height);
 
    MainWindow window;
 
@@ -57,6 +69,7 @@ int main(int argc, char* argv[])
    ZoomGesture zg;
 
    bool paused = false;
+   bool dirty = true;
    while (!quit) {
       // Handle events
       while (SDL_PollEvent(&e) != 0) {
@@ -93,14 +106,20 @@ int main(int argc, char* argv[])
                {
                case 1:
                   test_img.Load("test_img_1.png");
+                  dirty = true;
                   break;
                case 2:
                   test_img.Load("test_img_2.png");
+                  dirty = true;
                   break;
                default:
                   debug = 0;
                   break;
                }
+               break;
+            case SDLK_SPACE:
+               window.Stamp();
+               break;
             }
             break;
          case SDL_FINGERDOWN:
@@ -110,7 +129,10 @@ int main(int argc, char* argv[])
             window.FingerUp({(int)(e.tfinger.x * window.Size().x), (int)(e.tfinger.y * window.Size().y)}, e.tfinger.fingerId);
             break;
          case SDL_FINGERMOTION:
-            window.FingerMotion({(int)(e.tfinger.x * window.Size().x), (int)(e.tfinger.y * window.Size().y)}, e.tfinger.fingerId);
+            window.FingerMotion(
+               {(int)(e.tfinger.x * window.Size().x), (int)(e.tfinger.y * window.Size().y)},
+               {(int)(e.tfinger.dx * window.Size().x), (int)(e.tfinger.dy * window.Size().y)},
+                e.tfinger.fingerId);
             break;
          }
       }
@@ -122,13 +144,17 @@ int main(int argc, char* argv[])
 
          if (debug != 0)
          {
-            window.UpdateTexture(test_img.Data(), test_img.Pitch());
+            if (dirty)
+            {
+               window.UpdateTexture(test_img.Data(), test_img.Pitch());
+               dirty = false;
+            }
          }
          else
          {
             void* p = cap.GetFrame();
             if (p)
-               window.UpdateTexture(p, cap.Stride());
+               window.UpdateTexture(p, cap.Pitch());
          }
       }
 
