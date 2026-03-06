@@ -2,6 +2,7 @@
 
 #include "Button.hh"
 #include "ZoomGesture.hh"
+#include "src/Image.hh"
 
 #include <SDL2/SDL.h>
 
@@ -10,6 +11,7 @@ struct SDL_Renderer;
 struct SDL_Texture;
 
 class Text;
+class VideoCapture;
 
 class MainWindow final
 {
@@ -17,14 +19,13 @@ public:
    MainWindow();
    ~MainWindow();
 
-   bool Create(size_t frame_width, size_t frame_height);
+   bool Create();
 
-   void UpdateTexture(void* p, int pitch);
+   void UpdateTexture(uint8_t* p, int width, int height, int pitch);
+   void Step();
    void Draw();
    void Resize(int new_width, int new_height);
    void Translate(int dx, int dy);
-
-   bool Paused() const { return m_paused; }
 
    bool MouseDown(const SDL_Point& p, int button);
    bool MouseUp(const SDL_Point& p, int button);
@@ -39,15 +40,15 @@ public:
 
    void Stamp()
    {
-      // m_debug_stamp = true;
-      // Glyph g {
-      //    .x = m_window_size.x / 4,
-      //    .y = m_window_size.y / 2,
-      //    .height = m_initial_height,
-      //    .stride = m_initial_stride,
-      // };
-      // SampleGlyph(g);
-      // m_debug_stamp = false;
+      m_debug_stamp = true;
+      Glyph g {
+         .x = m_window_size.x / 4,
+         .y = m_window_size.y / 2,
+         .height = m_estimated_height,
+         .stride = m_estimated_stride,
+      };
+      SampleGlyph(g);
+      m_debug_stamp = false;
    }
 
 protected:
@@ -82,8 +83,8 @@ protected:
    // segments possible
    void ScanForGlyphs();
 
-   void Pause();
-   void Play();
+   void Open();
+   void Camera();
    void Zoom(const SDL_Point& pos, float f);
 
    uint8_t& Pixel(int x, int y)
@@ -131,9 +132,14 @@ private:
    // cv::Mat m_data;
    uint8_t* m_yuv_data = nullptr;
 
-   Button m_pause;
-   Button m_play;
+   Button m_open_button;
+   Button m_camera_button;
+   // Button m_stamp_button;
+   int m_debug = 0;
+   Image m_img;
+   std::shared_ptr<VideoCapture> m_camera;
    bool m_paused = false;
+   bool m_black_on_white = true;
 
-   ZoomGesture zg;
+   ZoomGesture m_zg;
 };

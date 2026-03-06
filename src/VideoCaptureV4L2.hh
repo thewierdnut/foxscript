@@ -1,28 +1,30 @@
 #pragma once
 
+#include "VideoCapture.hh"
+
 #include <map>
 #include <string>
 #include <vector>
 #include <cstdint>
 
 
-class VideoCaptureV4L2 final
+class VideoCaptureV4L2: public VideoCapture
 {
 public:
    VideoCaptureV4L2();
-   ~VideoCaptureV4L2();
+   virtual ~VideoCaptureV4L2();
 
-   size_t DeviceCount() const { return m_devices.size(); }
+   virtual size_t DeviceCount() const override { return m_devices.size(); }
 
-   bool Open(size_t idx);
-   void Close();
+   virtual bool Open(size_t idx) override;
+   virtual void Close() override;
 
-   int Width() const { return m_devices[m_dev_idx].format.width; }
-   int Height() const { return m_devices[m_dev_idx].format.height; }
-   int Pitch() const { return m_pitch; }
+   virtual int Width() const override { return m_devices[m_dev_idx].format.width; }
+   virtual int Height() const override { return m_devices[m_dev_idx].format.height; }
+   virtual int Pitch() const override { return m_pitch; }
 
    // Always YUYV (YUY2) format.
-   void* GetFrame();
+   virtual void* GetFrame() override;
 
 private:
    struct CameraInfo

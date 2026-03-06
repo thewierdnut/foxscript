@@ -29,27 +29,6 @@ int EventFilter(void* userdata, SDL_Event* event)
 
 int main(int argc, char* argv[])
 {
-   // Initialize Camera
-#ifndef __ANDROID__
-   VideoCaptureV4L2 cap;
-#else
-   VideoCaptureAndroid cap;
-#endif
-   if (!cap.Open(0))
-   {
-      SDL_Log("Error: Could not open camera.");
-      return -1;
-   }
-   int frame_width = cap.Width();
-   int frame_height = cap.Height();
-
-   SDL_Log("frame_width: %d, frame_height: %d", frame_width, frame_height);
-
-   int debug = 1;
-   Image test_img(frame_width, frame_height);
-   test_img.Load("test_img_1.png");
-
-
    // For android, game loop does not run on the main thread, and some of these
    // events need handled from within the java callback context. Handle them
    // directly rather than relying on the sdl event loop. This filter needs
@@ -61,7 +40,7 @@ int main(int argc, char* argv[])
 
    MainWindow window;
 
-   if (!window.Create(frame_width, frame_height))
+   if (!window.Create())
       return -1;
 
    bool quit = false;
@@ -70,9 +49,11 @@ int main(int argc, char* argv[])
 
    bool paused = false;
    bool dirty = true;
-   while (!quit) {
+   while (!quit)
+   {
       // Handle events
-      while (SDL_PollEvent(&e) != 0) {
+      while (SDL_PollEvent(&e) != 0)
+      {
          switch (e.type)
          {
          case SDL_QUIT:
@@ -102,20 +83,7 @@ int main(int argc, char* argv[])
             switch (e.key.keysym.sym)
             {
             case SDLK_d:
-               switch(++debug)
-               {
-               case 1:
-                  test_img.Load("test_img_1.png");
-                  dirty = true;
-                  break;
-               case 2:
-                  test_img.Load("test_img_2.png");
-                  dirty = true;
-                  break;
-               default:
-                  debug = 0;
-                  break;
-               }
+               
                break;
             case SDLK_SPACE:
                window.Stamp();
@@ -136,32 +104,11 @@ int main(int argc, char* argv[])
             break;
          }
       }
-
-      // Capture new frame
-      // if (!paused)
-      if (!window.Paused())
-      {
-
-         if (debug != 0)
-         {
-            if (dirty)
-            {
-               window.UpdateTexture(test_img.Data(), test_img.Pitch());
-               dirty = false;
-            }
-         }
-         else
-         {
-            void* p = cap.GetFrame();
-            if (p)
-               window.UpdateTexture(p, cap.Pitch());
-         }
-      }
+      
+      window.Step();
 
       window.Draw();
    }
-
-   cap.Close();
 
    // TscSampler::Dump();
 

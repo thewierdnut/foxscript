@@ -12,6 +12,8 @@ public:
    Text(const std::shared_ptr<SDL_Renderer>& r, const std::string& name);
    ~Text();
 
+   // TODO: need to be able to scale this text according to the screen
+   //       resolution.
    int Render(const std::shared_ptr<SDL_Renderer>& r, const SDL_Point& pos, const std::string& s);
 
    int Height() const { return m_height; }

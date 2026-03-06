@@ -2,13 +2,14 @@
 
 #include "res/res.hh"
 #include "picopng.h"
+#include "src/VideoCapture.hh"
 
 #include <SDL2/SDL.h>
 
-Image::Image(int width, int height):
-   m_yuv_data(width * height * 2, 0x80),
-   m_width(width),
-   m_height(height)
+Image::Image():
+   m_yuv_data(1920 * 1080 * 2, 0x80),
+   m_width(1920),
+   m_height(1080)
 {
 }
 
@@ -30,6 +31,9 @@ bool Image::Load(const std::string& path)
       SDL_Log("Unable to decode %s", path.c_str());
       return false;
    }
+   m_width = width;
+   m_height = height;
+   m_yuv_data.resize(m_width * m_height * 2, 0x80);
 
    auto target_pixel = [&](int x, int y) -> uint8_t& {
       return m_yuv_data[y * m_width * 2 + x * 2];
@@ -48,7 +52,6 @@ bool Image::Load(const std::string& path)
    // using nearest-neighbor.
    for (int y = 0; y < m_height; ++y)
    {
-      
       int rgby = y * height / m_height;
       for (int x = 0; x < m_width; ++x)
       {
@@ -56,5 +59,6 @@ bool Image::Load(const std::string& path)
          target_pixel(x, y) = src_pixel(rgbx, rgby);
       }
    }
+
    return true;
 }

@@ -1,14 +1,17 @@
 #pragma once
 
+#include <memory>
 #include <string>
 #include <vector>
 #include <cstdint>
+
+class VideoCapture;
 
 // Mostly just for debug purposes, load an image from resources as yuv
 class Image final
 {
 public:
-   Image(int width, int height);
+   Image();
    
    bool Load(const std::string& path);
 
@@ -22,6 +25,6 @@ public:
 private:
    std::vector<uint8_t> m_yuv_data;
 
-   const int m_width = 0;
-   const int m_height = 0;
+   int m_width = 0;
+   int m_height = 0;
 };

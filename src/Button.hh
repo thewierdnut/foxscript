@@ -49,7 +49,7 @@ public:
       {
          m_mousedown = 0;
          if (m_pos.x <= e.x && e.x < m_pos.x + m_pos.w &&
-          m_pos.y <= e.y && e.y < m_pos.y + m_pos.y)
+             m_pos.y <= e.y && e.y < m_pos.y + m_pos.y)
          {
             m_cb();
          }

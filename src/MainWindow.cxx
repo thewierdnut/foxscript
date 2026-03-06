@@ -8,12 +8,33 @@
 #include <algorithm>
 #include <cassert>
 
+
+volatile bool g_async_camera_ready = false;
+
+
+#ifdef __ANDROID__
+#include "VideoCaptureAndroid.hh"
+#include <jni.h>
+
+extern "C"
+{
+JNIEXPORT void JNICALL Java_com_github_thewierdnut_foxscript_FSActivity_CameraReady(JNIEnv *, jobject)
+{
+   g_async_camera_ready = true;
+}
+}
+#else
+#include "VideoCaptureV4L2.hh"
+#endif
+
+
+
 namespace
 {
    constexpr size_t WIDTH = 640;
    constexpr size_t HEIGHT = 480;
    constexpr int LINE_THICKNESS = 5;
-   constexpr uint8_t THRESHOLD = 64;
+   constexpr uint8_t THRESHOLD = 96;
 
    // Initial guess at the size of the runes.
    constexpr int RATIO_WIDTH = 60;   // Runes are typically 60% as wide as they are tall
@@ -78,7 +99,7 @@ namespace
       {{ 00, 25}, { 50, 40}},
    };
    // A circle at the bottom is present if the vowel comes first.
-   constexpr struct {int x, y; } VOWEL_FIRST {0, 60 };
+   constexpr struct {int x, y; } VOWEL_FIRST {0, 60};
    
 
    const char* VOWELS[64] = { // 6 bits, but only 18 values
@@ -258,23 +279,23 @@ namespace
 
 
 MainWindow::MainWindow():
-   m_pause({WIDTH - 64, HEIGHT - 64, 64, 64}, "pause.png", [this](){Pause();}),
-   m_play ({WIDTH - 64, HEIGHT - 64, 64, 64}, "play.png",  [this](){Play(); }),
-   m_window_size{WIDTH, HEIGHT}
+   m_open_button({WIDTH - 64, HEIGHT - 64, 64, 64}, "open.png", [this](){Open();}),
+   m_camera_button({WIDTH - 128, HEIGHT - 64, 64, 64}, "camera.png", [this](){Camera();}),
+   // m_stamp_button({WIDTH - 192, HEIGHT - 64, 64, 64}, "test_square.png", [this](){Stamp();}),
+   m_window_size{WIDTH, HEIGHT},
+   m_img()
 {
-   m_play.Disable();
-
    // Prepopulate the parameters we vary to find the glyphs, since they
    // should be sorted by how "abnormal" they are.
-   for (int dx = -12; dx <= 12; dx += 2)
+   for (int dx = -4; dx <= 10; dx += 2)
    {
-      for (int dy = -12; dy <= 12; dy += 2)
+      for (int dy = -8; dy <= 8; dy += 2)
       {
          // Ratio to height, which is typically around 60%, varied by 5%
-         for (int ratio = (int)(PARAM_DEN * .55); ratio < (int)(PARAM_DEN * .65); ratio += 1)
+         for (int ratio = (int)(PARAM_DEN * .55); ratio < (int)(PARAM_DEN * .65); ratio += 3)
          {
             // How much to vary the size, varied by 50%
-            for (int height = (int)(PARAM_DEN * .5); height < (int)(PARAM_DEN * 1.5); height += 4)
+            for (int height = (int)(PARAM_DEN * .75); height < (int)(PARAM_DEN * 1.25); height += 5)
             {
                m_guess_params.push_back({dx, dy, ratio, height});
             }
@@ -299,11 +320,10 @@ MainWindow::~MainWindow()
    SDL_Quit();
 }
 
-bool MainWindow::Create(size_t frame_width, size_t frame_height)
+bool MainWindow::Create()
 {
-   m_dst_rect.w = m_frame_width = frame_width;
-   m_dst_rect.h = m_frame_height = frame_height;
-   
+   m_dst_rect.w = m_frame_width;
+   m_dst_rect.h = m_frame_height;
 
 
    // Initialize SDL
@@ -335,11 +355,12 @@ bool MainWindow::Create(size_t frame_width, size_t frame_height)
    SDL_SetRenderDrawBlendMode(m_renderer.get(), SDL_BLENDMODE_BLEND);
 
    // Create a placeholder texture for the camera frames
-   m_texture.reset(SDL_CreateTexture(m_renderer.get(), SDL_PIXELFORMAT_YUY2,
-                                 SDL_TEXTUREACCESS_STREAMING, frame_width, frame_height),
-                     SDL_DestroyTexture);
+   // m_texture.reset(SDL_CreateTexture(m_renderer.get(), SDL_PIXELFORMAT_YUY2,
+   //                               SDL_TEXTUREACCESS_STREAMING, m_frame_width, m_frame_height),
+   //                   SDL_DestroyTexture);
+   
 
-   m_font.reset(new Text(m_renderer, "text_24.png"));
+   m_font.reset(new Text(m_renderer, "text_48.png"));
 
    
    auto cres = GetResource("circle.png");
@@ -363,40 +384,84 @@ bool MainWindow::Create(size_t frame_width, size_t frame_height)
    return true;
 }
 
-void MainWindow::UpdateTexture(void* p, int pitch)
+void MainWindow::UpdateTexture(uint8_t* p, int width, int height, int pitch)
 {
-   // Update texture with OpenCV frame data
-   // TODO: gemini lied to me. We should use SDL_LockTexture here.
-   SDL_UpdateTexture(m_texture.get(), NULL, p, pitch);
-   
-   // Run threshold algorithm on Y channels
-   uint8_t* y = (uint8_t*)p;
-   for (int i = 0; i < m_frame_height; ++i)
+   if (!p)
+      return;
+
+   if (!m_texture || m_frame_height != height || m_frame_width != width || m_frame_pitch != pitch)
    {
-      for (int j = 0; j < pitch; j += 2)
+      m_texture.reset(
+         SDL_CreateTexture(
+            m_renderer.get(),
+            SDL_PIXELFORMAT_YUY2,
+            SDL_TEXTUREACCESS_STREAMING,
+            width, height
+         ),
+         SDL_DestroyTexture
+      );
+
+      m_frame_pitch = pitch;
+      m_frame_height = height;
+      m_frame_width = width;
+      m_dst_rect = {0, 0, width, height};
+   }
+   // TODO: gemini lied to me. We should use SDL_LockTexture here.
+   // SDL_UpdateTexture(m_texture.get(), NULL, p, pitch);
+   
+   m_yuv_data = p;
+
+   // Does this have white text on black, or black text on white?
+   size_t black_pixels = 0;
+   size_t total_pixels = 0;
+   for (int y = m_frame_height / 4; y < m_frame_height / 4 * 3; y += 10)
+   {
+      for (int x = m_frame_width / 4; x < m_frame_width / 4 * 3; x += 10)
       {
-         *y = *y > THRESHOLD ? 255 : 0;
-         ++y;
-         *y = 128;
-         ++y;
+         black_pixels += Pixel(x, y) < 128;
+         total_pixels += 1;
       }
    }
-   m_yuv_data = (uint8_t*)p;
-   m_frame_pitch = pitch;
+   m_black_on_white = black_pixels < total_pixels / 2;
 
-
+   // Run threshold algorithm on Y channels
+   if (m_black_on_white)
+   {
+      uint8_t* y = m_yuv_data;
+      for (int i = 0; i < m_frame_height; ++i)
+      {
+         for (int j = 0; j < pitch; j += 2)
+         {
+            *y = *y > THRESHOLD ? 255 : 0;
+            ++y;
+            *y = 128;
+            ++y;
+         }
+      }
+   }
+   else
+   {
+      uint8_t* y = m_yuv_data;
+      for (int i = 0; i < m_frame_height; ++i)
+      {
+         for (int j = 0; j < pitch; j += 2)
+         {
+            *y = *y > (255 - THRESHOLD) ? 0 : 255;
+            ++y;
+            *y = 128;
+            ++y;
+         }
+      }
+   }
+   SDL_UpdateTexture(m_texture.get(), NULL, m_yuv_data, pitch);
    
-
-   // cv::Mat frame(m_frame_height, m_frame_width, CV_8UC2, (void*)p, pitch);
-   // cv::cvtColor(frame, m_data, cv::COLOR_YUV2GRAY_YUYV);
-   // cv::threshold(m_data, m_data, 48, 255, cv::THRESH_BINARY_INV);
 
    // Words are joined together, usually with the horizontal centerline,
    // but not always. Try to collect and save off rects representing each
    // word, so that we know to insert a space if we leave it.
    
    m_word_rects.clear();
-   FindRects((uint8_t*)p, m_frame_width, m_frame_height, pitch, m_word_rects);
+   FindRects((uint8_t*)m_yuv_data, m_frame_width, m_frame_height, m_frame_pitch, m_word_rects);
 
    for (auto it = m_word_rects.begin(); it != m_word_rects.end();)
    {
@@ -409,14 +474,56 @@ void MainWindow::UpdateTexture(void* p, int pitch)
    ScanForGlyphs();
 }
 
+void MainWindow::Step()
+{
+   if (g_async_camera_ready)
+   {
+      SDL_Log("Asynchronously requested to start camera capture");
+      g_async_camera_ready = false;
+      m_yuv_data = nullptr;
+
+      if (!m_camera)
+      {
+         // TODO: select a camera?
+         int camera_idx = 0;
+#ifndef __ANDROID__
+         m_camera.reset(new VideoCaptureV4L2());
+#else
+         m_camera.reset(new VideoCaptureAndroid());
+         // camera_idx = 2;
+#endif
+         // TODO: Select which camera?
+         if (!m_camera->Open(camera_idx))
+         {
+            SDL_Log("Failed to start camera");
+            m_camera.reset();
+         }
+         else
+         {
+            m_paused = false;
+         }
+      }
+   }
+
+   if (m_camera && !m_paused)
+   {
+      UpdateTexture((uint8_t*)m_camera->GetFrame(), m_camera->Width(), m_camera->Height(), m_camera->Pitch());
+   }
+}
+
 void MainWindow::Draw()
 {
    // Render
    SDL_SetRenderDrawColor(m_renderer.get(), 0, 0, 0, 255);
    SDL_RenderClear(m_renderer.get());
 
-   // Need this for stamp to work
-   SDL_RenderCopy(m_renderer.get(), m_texture.get(), NULL, &m_dst_rect);
+   if (m_texture)
+   {
+      // if (m_yuv_data)
+      //    SDL_UpdateTexture(m_texture.get(), NULL, m_yuv_data, m_frame_pitch);
+
+      SDL_RenderCopy(m_renderer.get(), m_texture.get(), NULL, &m_dst_rect);
+   }
 
    // // Debug, drawing shape rects
    // SDL_SetRenderDrawColor(m_renderer.get(), 0, 0, 255, 128);
@@ -532,10 +639,11 @@ void MainWindow::Draw()
       RenderGlyph(m_bad_glyph, 255, 0, 0);
    }
 
-   // m_font->Render(m_renderer, {50, 50}, "!\"#{|}~");
+   m_open_button.Draw(m_renderer);
+   m_camera_button.Draw(m_renderer);
+   // m_stamp_button.Draw(m_renderer);
 
-   m_play.Draw(m_renderer);
-   m_pause.Draw(m_renderer);
+   // m_font->Render(m_renderer, {0, m_window_size.y - m_font->Height()}, m_black_on_white ? "Black" : "White" );
 
    SDL_RenderPresent(m_renderer.get());
 }
@@ -566,8 +674,9 @@ void MainWindow::Resize(int new_width, int new_height)
    m_estimated_height = m_initial_height;
    m_estimated_stride = m_initial_stride;
 
-   m_play.SetPosition(SDL_Rect{new_width - m_initial_height, new_height - m_initial_height, m_initial_height, m_initial_height});
-   m_pause.SetPosition(SDL_Rect{new_width - m_initial_height, new_height - m_initial_height, m_initial_height, m_initial_height});
+   m_open_button.SetPosition(SDL_Rect{new_width - m_initial_height, new_height - m_initial_height, m_initial_height, m_initial_height});
+   m_camera_button.SetPosition(SDL_Rect{new_width - m_initial_height * 2, new_height - m_initial_height, m_initial_height, m_initial_height});
+   // m_stamp_button.SetPosition(SDL_Rect{new_width - m_initial_height * 3, new_height - m_initial_height, m_initial_height, m_initial_height});
 
    ScanForGlyphs();
 }
@@ -581,29 +690,36 @@ void MainWindow::Translate(int dx, int dy)
 
 bool MainWindow::MouseDown(const SDL_Point& p, int button)
 {
-   if (m_play.MouseDown(p, button))
+   //SDL_Log("MouseDown()");
+   if (m_open_button.MouseDown(p, button))
       return true;
-   if (m_pause.MouseDown(p, button))
+   if (m_camera_button.MouseDown(p, button))
       return true;
-
+   // if (m_stamp_button.MouseDown(p, button))
+   //    return true;
    return false;
 }
 
 bool MainWindow::MouseUp(const SDL_Point& p, int button)
 {
-   if (m_play.MouseUp(p, button))
+   //SDL_Log("MouseUp()");
+   if (m_open_button.MouseUp(p, button))
       return true;
-   if (m_pause.MouseUp(p, button))
+   if (m_camera_button.MouseUp(p, button))
       return true;
+   // if (m_stamp_button.MouseUp(p, button))
+   //    return true;
    return false;
 }
 
 bool MainWindow::MouseMotion(const SDL_Point& p, int button)
 {
-   if (m_play.MouseMotion(p, button))
+   if (m_open_button.MouseMotion(p, button))
       return true;
-   if (m_pause.MouseMotion(p, button))
+   if (m_camera_button.MouseMotion(p, button))
       return true;
+   // if (m_stamp_button.MouseMotion(p, button))
+   //    return true;
 
    if (button)
       Translate(p.x, p.y);
@@ -612,9 +728,7 @@ bool MainWindow::MouseMotion(const SDL_Point& p, int button)
 
 bool MainWindow::MouseWheel(const SDL_Point& p, int s)
 {
-   // if (m_play.MouseWheel(y))
-   //    return true;
-   // if (m_pause.MouseWheel(y))
+   // if (m_open_button.MouseWheel(y))
    //    return true;
 
    Zoom(p, m_zoom * (s > 0 ? 1.05 : .95));
@@ -624,32 +738,34 @@ bool MainWindow::MouseWheel(const SDL_Point& p, int s)
 
 bool MainWindow::FingerDown(const SDL_Point& p, int fid)
 {
-   if (zg.FingerDown(p, fid))
+   //SDL_Log("FingerDown()");
+   if (m_zg.FingerDown(p, fid))
       return true;
    return MouseDown(p, SDL_BUTTON_LEFT);
 }
 
 bool MainWindow::FingerUp(const SDL_Point& p, int fid)
 {
-   if (zg.FingerUp(p, fid))
+   //SDL_Log("FingerUp()");
+   if (m_zg.FingerUp(p, fid))
       return true;
-   return MouseUp(p, fid);
+   return MouseUp(p, SDL_BUTTON_LEFT);
 }
 
 bool MainWindow::FingerMotion(const SDL_Point& p, const SDL_Point& dp, int fid)
 {
-   if (zg.FingerMove(p, fid))
+   if (m_zg.FingerMove(p, fid))
    {
       Zoom({
-            m_dst_rect.x + zg.CenterDelta().x,
-            m_dst_rect.y + zg.CenterDelta().y
+            m_dst_rect.x + m_zg.CenterDelta().x,
+            m_dst_rect.y + m_zg.CenterDelta().y
          },
-         m_zoom * zg.Zoom()
+         m_zoom * m_zg.Zoom()
       );
-      MouseMotion(zg.CenterDelta(), SDL_BUTTON_LMASK);
+      MouseMotion(m_zg.CenterDelta(), SDL_BUTTON_LMASK);
       return true;
    }
-   SDL_Log("FingerMotion(%d, %d)", dp.x, dp.y);
+   // SDL_Log("FingerMotion(%d, %d)", dp.x, dp.y);
    return MouseMotion(dp, SDL_BUTTON_LMASK);
 }
 
@@ -736,7 +852,6 @@ size_t MainWindow::SampleGlyph(Glyph& g)
    // For each segment position, sample three pixels and 30, 50, and 70%
    // of the line segment. If they are all dark, then assume the line
    // segment is drawn.
-   // TODO: white on black vs black on white?
    size_t black_pixels = 0;
    for (uint16_t i = 0; i < 12; ++i)
    {
@@ -848,9 +963,9 @@ size_t MainWindow::SampleGlyph(Glyph& g)
       //    {(s.p1.x * 3 + s.p2.x * 1) / 4, (s.p1.y * 3 + s.p2.y * 1) / 4},
       // };
       const SDL_Point sp[] = {
-         {(s.p1.x * 2 + s.p2.x *14) / 16, (s.p1.y * 2 + s.p2.y *14) / 16},
+         {(s.p1.x * 1 + s.p2.x *15) / 16, (s.p1.y * 1 + s.p2.y *15) / 16},
          {(s.p1.x * 8 + s.p2.x * 8) / 16, (s.p1.y * 8 + s.p2.y * 8) / 16},
-         {(s.p1.x *14 + s.p2.x * 2) / 16, (s.p1.y *14 + s.p2.y * 2) / 16},
+         {(s.p1.x *15 + s.p2.x * 1) / 16, (s.p1.y *15 + s.p2.y * 1) / 16},
       };
       const uint32_t sample_points = sizeof(sp)/sizeof(*sp);
       for (auto& p: sp)
@@ -860,7 +975,6 @@ size_t MainWindow::SampleGlyph(Glyph& g)
          // {
          //    Pixel(p.x, p.y) = Pixel(p.x, p.y) <= 128 ? 127 : 129;
          // }
-            
       }
 
       // uint8_t l1 = luminance(s1x, s1y);
@@ -879,7 +993,7 @@ size_t MainWindow::SampleGlyph(Glyph& g)
    // Sample at the vowel/consanant swap marker. This is drawn as a circle.
    int cx = px + VOWEL_FIRST.x * p_stride / GLYPH_SCALE;
    int cy = py + VOWEL_FIRST.y * p_height / GLYPH_SCALE;
-   const int thickness = ScreenToImg(LINE_THICKNESS)*3/4;
+   const int thickness = p_stride * 8 / 64; // About 15% of the width of the glyph
 
    int outer[4] = {};
    int hole = 0;
@@ -1099,19 +1213,110 @@ void MainWindow::ScanForGlyphs()
    }
 }
 
-void MainWindow::Pause()
+void MainWindow::Open()
 {
-   m_pause.Disable();
-   m_play.Enable();
-   m_paused = true;
+   m_camera.reset();
+
+   switch(++m_debug)
+   {
+   case 1:
+      m_img.Load("test_img_1.png");
+      UpdateTexture(m_img.Data(), m_img.Width(), m_img.Height(), m_img.Pitch());
+      break;
+   case 2:
+      m_img.Load("test_img_2.png");
+      UpdateTexture(m_img.Data(), m_img.Width(), m_img.Height(), m_img.Pitch());
+      break;
+   case 3:
+      m_img.Load("test_img_3.png");
+      UpdateTexture(m_img.Data(), m_img.Width(), m_img.Height(), m_img.Pitch());
+      break;
+   default:
+      m_debug = 0;
+      break;
+   }
+#ifndef __ANDROID__
+   SDL_Log("This is where we pop up a file open dialog");
+   switch(++m_debug)
+   {
+   case 1:
+      m_img.Load("test_img_1.png");
+      UpdateTexture(m_img.Data(), m_img.Width(), m_img.Height(), m_img.Pitch());
+      break;
+   case 2:
+      m_img.Load("test_img_2.png");
+      UpdateTexture(m_img.Data(), m_img.Width(), m_img.Height(), m_img.Pitch());
+      break;
+   default:
+      m_debug = 0;
+      break;
+   }
+   
+#else
+   // SDL_Log("Attempting to call CheckCameraPermissions");
+
+   // // something android-ish
+   // auto* env = (JNIEnv*)SDL_AndroidGetJNIEnv();
+   // SDL_Log("   env: %p", env);
+   // env->PushLocalFrame(16);
+
+   // /* context = SDLActivity.getContext(); */
+   // jobject context = (jobject)SDL_AndroidGetActivity();
+   // SDL_Log("   context: %p", context);
+
+   // /* context.GetNewCameraImage(); */
+   // jmethodID mid = env->GetMethodID(env->GetObjectClass(context),
+   //          "CheckCameraPermissions", "()Z");
+   // SDL_Log("   mid: %p", mid);
+
+   // bool success = env->CallBooleanMethod(context, mid);
+   // env->PopLocalFrame(nullptr);
+
+   // SDL_Log("CheckCameraPermissions() returned %s", success ? "true": "false");
+
+#endif
 }
 
-void MainWindow::Play()
+void MainWindow::Camera()
 {
-   m_play.Disable();
-   m_pause.Enable();
-   m_paused = false;
+   SDL_Log("This is where we show camera output");
+   if (m_camera)
+   {
+      m_paused = !m_paused;
+   }
+   else
+   {
+#ifndef __ANDROID__
+      g_async_camera_ready = true;
+#else
+      SDL_Log("Attempting to call CheckCameraPermissions");
+
+      // something android-ish
+      auto* env = (JNIEnv*)SDL_AndroidGetJNIEnv();
+      SDL_Log("   env: %p", env);
+      env->PushLocalFrame(16);
+
+      /* context = SDLActivity.getContext(); */
+      jobject context = (jobject)SDL_AndroidGetActivity();
+      SDL_Log("   context: %p", context);
+
+      /* context.GetNewCameraImage(); */
+      jmethodID mid = env->GetMethodID(env->GetObjectClass(context),
+               "CheckCameraPermissions", "()Z");
+      SDL_Log("   mid: %p", mid);
+
+      bool success = env->CallBooleanMethod(context, mid);
+      env->PopLocalFrame(nullptr);
+
+      SDL_Log("CheckCameraPermissions() returned %s", success ? "true": "false");
+      if (success)
+         g_async_camera_ready = true;
+#endif
+
+   }
 }
+
+
 
 void MainWindow::Zoom(const SDL_Point& pos, float z)
 {

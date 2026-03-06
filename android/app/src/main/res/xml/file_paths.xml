@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android will not allow you to share content urls unless they are
+     explicitly contain in paths shown here.
+-->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <cache-path path="." name="cache" />
+    
+</paths>
