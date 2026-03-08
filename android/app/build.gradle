@@ -1,0 +1,76 @@
+def buildAsLibrary = project.hasProperty('BUILD_AS_LIBRARY');
+def buildAsApplication = !buildAsLibrary
+if (buildAsApplication) {
+    apply plugin: 'com.android.application'
+}
+else {
+    apply plugin: 'com.android.library'
+}
+
+// dependencies {
+    // implementation "androidx.core:core:1.13.0"
+    // implementation "androidx.documentfile:documentfile:1.0.1"
+    // implementation 'androidx.appcompat:appcompat:1.6.1'
+    // implementation 'androidx.activity:activity:1.8.0'
+// }
+
+android {
+    if (buildAsApplication) {
+        namespace "com.github.thewierdnut.foxscript"
+    }
+    compileSdkVersion 34
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    ndkVersion "26.3.11579264"
+    defaultConfig {
+        minSdkVersion 24
+        targetSdkVersion 34
+        versionCode 1
+        versionName "1.0"
+        externalNativeBuild {
+            // ndkBuild {
+            //     arguments "APP_PLATFORM=android-19"
+            //     // abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'
+            //     abiFilters 'arm64-v8a'
+            // }
+            cmake {
+                arguments "-DANDROID_APP_PLATFORM=android-19", "-DANDROID_STL=c++_static", "-DCMAKE_BUILD_TYPE=Release", "-DSDL_SHARED=0"
+                // abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'
+                abiFilters 'arm64-v8a'
+            }
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+    applicationVariants.all { variant ->
+        tasks["merge${variant.name.capitalize()}Assets"]
+            .dependsOn("externalNativeBuild${variant.name.capitalize()}")
+    }
+    if (!project.hasProperty('EXCLUDE_NATIVE_LIBS')) {
+        sourceSets.main {
+            jniLibs.srcDir 'libs'
+        }
+        externalNativeBuild {
+            // ndkBuild {
+            //     path 'jni/Android.mk'
+            // }
+            cmake {
+                path 'jni/CMakeLists.txt'
+            }
+        }
+       
+    }
+    lint {
+        abortOnError false
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+}
