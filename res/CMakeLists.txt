@@ -47,10 +47,10 @@ endmacro()
 addfile(text_48.png)
 addfile(open.png)
 addfile(camera.png)
+addfile(circle.png)
 addfile(test_img_1.png)
 addfile(test_img_2.png)
 addfile(test_img_3.png)
-# addfile(test_square.png)
 
 
 file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/res.cxx "

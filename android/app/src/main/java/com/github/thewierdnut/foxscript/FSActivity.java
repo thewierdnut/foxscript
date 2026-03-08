@@ -16,6 +16,7 @@ import android.graphics.BitmapFactory;
 import android.provider.MediaStore;
 import android.net.Uri;
 import java.io.File;
+import java.io.InputStream;
 
 import android.util.Log;
 
@@ -52,24 +53,27 @@ public class FSActivity extends SDLActivity
     public void onActivityResult(int requestCode, int resultCode, Intent data)
     {
         Log.e("SDL-Debug", "FSActivity::onActivityResult()");
-        // if (requestCode == REQUEST_CAMERA_IMAGE)
-        // {
-        //     if (resultCode == Activity.RESULT_OK)
-        //     {
-        //         // Bundle extras = data.getExtras();
-        //         // Bitmap imageBitmap = (Bitmap) extras.get("data");
-        //         // Use the bitmap, for example, set it to an ImageView
-        //         Toast.makeText(this, "Successfully retrieved a picture ", Toast.LENGTH_SHORT).show();
-
-        //         Bitmap bitmap = BitmapFactory.decodeFile(getCacheDir() + "/tmp.jpg");
-        //         Log.e("SDL-Debug", "Retrieved " + String.valueOf(bitmap.getWidth()) + "x" + String.valueOf(bitmap.getWidth()));
-
-        //     }
-        //     else
-        //     {
-        //         Toast.makeText(this, "Failed to take picture ", Toast.LENGTH_SHORT).show();
-        //     }
-        // }
+        if (requestCode == REQUEST_GALLERY_IMAGE)
+        {
+            if (resultCode == Activity.RESULT_OK)
+            {
+                Uri imageUri = data.getData();
+                try
+                {
+                    InputStream inputStream = getContentResolver().openInputStream(imageUri);
+                    if (inputStream != null)
+                    {
+                        Bitmap bitmap = BitmapFactory.decodeStream(inputStream);
+                        Log.e("SDL-Debug", "Retrieved " + String.valueOf(bitmap.getWidth()) + "x" + String.valueOf(bitmap.getWidth()));
+                        ImageReady(bitmap);
+                    }
+                }
+                catch (java.io.FileNotFoundException e)
+                {
+                    Log.e("SDL-Debug", "Caught FileNotFoundException trying to open " + imageUri.toString());
+                }
+            }
+        }
     }
 
     @Override
@@ -101,41 +105,14 @@ public class FSActivity extends SDLActivity
 
     public native void CameraReady();
 
-    public void GetNewCameraImage()
+    public void GetImage()
     {
-        // Log.e("SDL-Debug", "FSActivity::GetNewCameraImage()");
+        Log.e("SDL-Debug", "FSActivity::GetImage()");
 
-        // Intent takePictureIntent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
-        // if (takePictureIntent.resolveActivity(getPackageManager()) != null)
-        // {
-        //     File outputFile;
-        //     try
-        //     {
-        //         outputFile = File.createTempFile("tmp.jpg", null, getCacheDir());
-        //     }
-        //     catch (java.io.IOException e)
-        //     {
-        //         Log.e("SDL-Debug", "FSActivity::GetNewCameraImage() -> caught exception trying to create temporary cache file");
-        //         return;
-        //     }
-
-        //     if (outputFile != null)
-        //     {
-        //         Uri uri = FileProvider.getUriForFile(this, "com.example.android.fileprovider", outputFile);
-        //         takePictureIntent.putExtra(MediaStore.EXTRA_OUTPUT, uri);
-        //         Log.e("SDL-Debug", "FSActivity::GetNewCameraImage() -> startActivityForResult()");
-        //         startActivityForResult(takePictureIntent, REQUEST_CAMERA_IMAGE);
-        //     }
-        //     else
-        //     {
-        //         Log.e("SDL-Debug", "FSActivity::GetNewCameraImage() Unable to create temporary image storage location");
-        //     }
-
-            
-        // }
-        // else
-        // {
-        //     Log.e("SDL-Debug", "FSActivity::GetNewCameraImage() resolveActivity returned false");
-        // }
+        Intent get_image = new Intent(Intent.ACTION_PICK);
+        get_image.setType("image/*");
+        startActivityForResult(get_image, REQUEST_GALLERY_IMAGE);
     }
+
+    public native void ImageReady(Bitmap b);
 }

@@ -19,6 +19,7 @@ target_link_libraries(main
 
    camera2ndk
    mediandk
+   jnigraphics
 )
 
 

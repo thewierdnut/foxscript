@@ -3,6 +3,7 @@
 #include "Button.hh"
 #include "ZoomGesture.hh"
 #include "src/Image.hh"
+#include "src/JobQueue.hh"
 
 #include <SDL2/SDL.h>
 
@@ -123,6 +124,14 @@ private:
       int dy;     /// y delta from target position.
       int ratio;  /// The fraction out of 128 the width is from the height.
       int scale;  /// The fraction out of 128 the height varies from the initial guess.
+
+      // The results of each guess. This is just so that I don't have to
+      // Reallocate this array every time.
+      size_t quality;
+      std::vector<Glyph> glyphs;
+      Glyph bad_glyph;
+      int height;
+      int stride;
    };
    static constexpr int PARAM_DEN = 128; // Keep this at a power of two for fast math.
    std::vector<Params> m_guess_params;
@@ -142,4 +151,6 @@ private:
    bool m_black_on_white = true;
 
    ZoomGesture m_zg;
+
+   JobQueue m_jobs;
 };

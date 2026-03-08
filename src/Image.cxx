@@ -62,3 +62,18 @@ bool Image::Load(const std::string& path)
 
    return true;
 }
+
+bool Image::Load(std::vector<uint8_t>& d, int width, int height)
+{
+   SDL_Log("Image::Load() from vector");
+   if (d.empty())
+      return false;
+   m_width = width;
+   m_height = height;
+   SDL_Log("Image::Load() doing swap");
+
+   d.swap(m_yuv_data);
+   SDL_Log("Image::Load() returning true");
+
+   return true;
+}

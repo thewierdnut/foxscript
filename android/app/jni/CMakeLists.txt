@@ -18,7 +18,7 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -flto")
 
 # SDL sources are in a subfolder named "SDL"
 OPTION(SDL_STATIC_PIC "" ON)
-set(SDL_SHARED OFF CACHE BOOL "shared") # doesn't seem to work right... For now passing in via gradle
+set(SDL_SHARED OFF CACHE BOOL "shared")
 set(SDL_STATIC ON CACHE BOOL "static")
 add_subdirectory(SDL)
 

@@ -14,6 +14,7 @@ public:
    Image();
    
    bool Load(const std::string& path);
+   bool Load(std::vector<uint8_t>& d, int width, int height);
 
    int Width() const { return m_width; }
    int Height() const { return m_height; }

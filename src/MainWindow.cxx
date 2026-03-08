@@ -8,13 +8,21 @@
 #include <algorithm>
 #include <cassert>
 
+#include <vector>
+#include <atomic>
+
 
 volatile bool g_async_camera_ready = false;
+std::mutex g_imported_image_mutex;
+std::vector<uint8_t> g_imported_image;
+uint32_t g_imported_width = 0;
+uint32_t g_imported_height = 0;
 
 
 #ifdef __ANDROID__
 #include "VideoCaptureAndroid.hh"
 #include <jni.h>
+#include <android/bitmap.h>
 
 extern "C"
 {
@@ -22,6 +30,46 @@ JNIEXPORT void JNICALL Java_com_github_thewierdnut_foxscript_FSActivity_CameraRe
 {
    g_async_camera_ready = true;
 }
+
+JNIEXPORT void JNICALL Java_com_github_thewierdnut_foxscript_FSActivity_ImageReady(JNIEnv *env, jobject, jobject bitmap)
+{
+   AndroidBitmapInfo info{};
+   if (ANDROID_BITMAP_RESULT_SUCCESS != AndroidBitmap_getInfo(env, bitmap, &info))
+      return;
+
+   if (info.format != ANDROID_BITMAP_FORMAT_RGBA_8888)
+      return;
+
+   void* bytes = nullptr;
+   if (ANDROID_BITMAP_RESULT_SUCCESS != AndroidBitmap_lockPixels(env, bitmap, &bytes))
+      return;
+   
+   if (bytes)
+   {
+      std::vector<uint8_t> yuyv(info.width * info.height * 2);
+      uint8_t* p = (uint8_t*)bytes;
+      uint8_t* dst = yuyv.data();
+      for (uint32_t y = 0; y < info.height; ++y)
+      {
+         uint8_t* row = p + y * info.stride;
+         for (uint32_t x = 0; x < info.width; ++x)
+         {
+            dst[0] = ((uint32_t)row[0] + row[1] + row[2]) / 3;
+            dst[1] = 0x80; // Don't actually care about the chroma fields.
+            dst += 2;
+            row += 4;
+         }
+      }
+      std::scoped_lock<std::mutex> lock(g_imported_image_mutex);
+      g_imported_width = info.width;
+      g_imported_height = info.height;
+      g_imported_image.swap(yuyv);
+   }
+
+
+   AndroidBitmap_unlockPixels(env, bitmap);
+}
+
 }
 #else
 #include "VideoCaptureV4L2.hh"
@@ -283,7 +331,8 @@ MainWindow::MainWindow():
    m_camera_button({WIDTH - 128, HEIGHT - 64, 64, 64}, "camera.png", [this](){Camera();}),
    // m_stamp_button({WIDTH - 192, HEIGHT - 64, 64, 64}, "test_square.png", [this](){Stamp();}),
    m_window_size{WIDTH, HEIGHT},
-   m_img()
+   m_img(),
+   m_jobs("foxq")
 {
    // Prepopulate the parameters we vary to find the glyphs, since they
    // should be sorted by how "abnormal" they are.
@@ -501,6 +550,29 @@ void MainWindow::Step()
          else
          {
             m_paused = false;
+         }
+      }
+   }
+   else
+   {
+      std::unique_lock<std::mutex> lock(g_imported_image_mutex);
+      if (!g_imported_image.empty())
+      {
+         SDL_Log("Loading imported image");
+         if (m_img.Load(g_imported_image, g_imported_width, g_imported_height))
+         {
+            SDL_Log("After image swap, g_imported_image_size is %zu", g_imported_image.size());
+            g_imported_image.clear();
+            lock.unlock();
+            SDL_Log("Clearing the camera settings and unpausing");
+            m_camera.reset();
+            m_paused = false;
+
+            UpdateTexture(m_img.Data(), m_img.Width(), m_img.Height(), m_img.Pitch());
+         }
+         else
+         {
+            SDL_Log("Failed to load image");
          }
       }
    }
@@ -1121,62 +1193,74 @@ size_t MainWindow::ScanForGlyphSequence(int x, int y, std::vector<Glyph>& retgly
    if (word_left == -100000)
       return 0; // Not inside any word rect.
 
-   // baseline     19578586
-   // stride inc 2 10093313
-   // both inc 3    4875075  match more finicky
-   // st 2 he 3     7253668  better, but not as good as 1
-   // all 1       128061247  Very accurate and stable. And slow.
-   // all 2         9835266  Usable on desktop.
    // TscSampler ts("sg");
-
-   size_t best_guess = 0;
    retglyphs.clear();
-   std::vector<Glyph> glyphs;
-   for (auto& v: m_guess_params)
+   
+   for (size_t i = 0; i < m_guess_params.size(); i += 200)
    {
-      int dx = v.dx;
-      int dy = v.dy;
-      int height = m_initial_height * v.scale / PARAM_DEN;
-      int stride = height * v.ratio / PARAM_DEN;
-      glyphs.clear();
-      Glyph g{};
-      g.x = x + dx;
-      g.y = y + dy;
-      g.height = height;
-      g.stride = stride;
-      size_t quality = 0;
-      size_t quality_total = 0;
-      Glyph bad_glyph{};
-      quality = SampleGlyph(g);
-      while(quality && g.x < word_right)
-      {
-         uint16_t vowel_idx = g.g & 63;
-         uint16_t cons_idx = (g.g >> 6) & 63;
-         const char* vowel = VOWELS[vowel_idx];
-         const char* consonant = CONSONANTS[cons_idx];
-         // Not every combination of line segments is a valid glyph.
-         if (vowel_idx && !vowel[0] ||
-             cons_idx && !consonant[0])
+      m_jobs.AddJob([=]() {
+         for (int j = i; j < i + 200 && j < m_guess_params.size(); ++j)
          {
-            bad_glyph = g;
-            break;
-         }
-         quality_total += quality;
-         glyphs.push_back(g);
-         g.x += stride;
-         
-         quality = SampleGlyph(g);
-      }
+            auto& v = m_guess_params[j];
+            v.glyphs.clear();
 
-      if (quality_total > best_guess)
+            int dx = v.dx;
+            int dy = v.dy;
+            v.height = m_initial_height * v.scale / PARAM_DEN;
+            v.stride = v.height * v.ratio / PARAM_DEN;
+            
+            Glyph g{};
+            g.x = x + dx;
+            g.y = y + dy;
+            g.height = v.height;
+            g.stride = v.stride;
+            size_t quality = 0;
+            v.quality = 0;
+            Glyph bad_glyph{};
+            quality = SampleGlyph(g);
+            while(quality && g.x < word_right)
+            {
+               uint16_t vowel_idx = g.g & 63;
+               uint16_t cons_idx = (g.g >> 6) & 63;
+               const char* vowel = VOWELS[vowel_idx];
+               const char* consonant = CONSONANTS[cons_idx];
+               // Not every combination of line segments is a valid glyph.
+               if (vowel_idx && !vowel[0] ||
+                  cons_idx && !consonant[0])
+               {
+                  v.bad_glyph = g;
+                  break;
+               }
+               v.quality += quality;
+               v.glyphs.push_back(g);
+               g.x += v.stride;
+               
+               quality = SampleGlyph(g);
+            }
+         }
+      });
+   }
+
+   m_jobs.Wait();
+   
+   size_t best_guess = 0;
+   // m_bad_glyph.g = 0;
+   for (auto& p: m_guess_params)
+   {
+      if (!p.glyphs.empty())
       {
-         best_guess = quality_total;
-         retglyphs.swap(glyphs);
-         m_bad_glyph = bad_glyph;
-         m_estimated_height = height;
-         m_estimated_stride = stride;
+         if (p.quality > best_guess)
+         {
+            best_guess = p.quality;
+            retglyphs.swap(p.glyphs);
+            // if (p.bad_glyph.g)
+            //    m_bad_glyph = p.bad_glyph;
+            m_estimated_height = p.height;
+            m_estimated_stride = p.stride;
+         }
       }
    }
+
    return best_guess;
 }
 
@@ -1217,6 +1301,8 @@ void MainWindow::Open()
 {
    m_camera.reset();
 
+#ifndef __ANDROID__
+   SDL_Log("This is where we pop up a file open dialog");
    switch(++m_debug)
    {
    case 1:
@@ -1235,44 +1321,22 @@ void MainWindow::Open()
       m_debug = 0;
       break;
    }
-#ifndef __ANDROID__
-   SDL_Log("This is where we pop up a file open dialog");
-   switch(++m_debug)
-   {
-   case 1:
-      m_img.Load("test_img_1.png");
-      UpdateTexture(m_img.Data(), m_img.Width(), m_img.Height(), m_img.Pitch());
-      break;
-   case 2:
-      m_img.Load("test_img_2.png");
-      UpdateTexture(m_img.Data(), m_img.Width(), m_img.Height(), m_img.Pitch());
-      break;
-   default:
-      m_debug = 0;
-      break;
-   }
    
 #else
-   // SDL_Log("Attempting to call CheckCameraPermissions");
+   // SDL_Log("Attempting to call FSActivity::GetImage()");
 
-   // // something android-ish
-   // auto* env = (JNIEnv*)SDL_AndroidGetJNIEnv();
-   // SDL_Log("   env: %p", env);
-   // env->PushLocalFrame(16);
+   auto* env = (JNIEnv*)SDL_AndroidGetJNIEnv();
+   env->PushLocalFrame(16);
 
-   // /* context = SDLActivity.getContext(); */
-   // jobject context = (jobject)SDL_AndroidGetActivity();
-   // SDL_Log("   context: %p", context);
+   /* context = SDLActivity.getContext(); */
+   jobject context = (jobject)SDL_AndroidGetActivity();
 
-   // /* context.GetNewCameraImage(); */
-   // jmethodID mid = env->GetMethodID(env->GetObjectClass(context),
-   //          "CheckCameraPermissions", "()Z");
-   // SDL_Log("   mid: %p", mid);
+   /* context.GetImage(); */
+   jmethodID mid = env->GetMethodID(env->GetObjectClass(context),
+            "GetImage", "()V");
 
-   // bool success = env->CallBooleanMethod(context, mid);
-   // env->PopLocalFrame(nullptr);
-
-   // SDL_Log("CheckCameraPermissions() returned %s", success ? "true": "false");
+   env->CallVoidMethod(context, mid);
+   env->PopLocalFrame(nullptr);
 
 #endif
 }
@@ -1291,24 +1355,19 @@ void MainWindow::Camera()
 #else
       SDL_Log("Attempting to call CheckCameraPermissions");
 
-      // something android-ish
       auto* env = (JNIEnv*)SDL_AndroidGetJNIEnv();
-      SDL_Log("   env: %p", env);
       env->PushLocalFrame(16);
 
       /* context = SDLActivity.getContext(); */
       jobject context = (jobject)SDL_AndroidGetActivity();
-      SDL_Log("   context: %p", context);
 
       /* context.GetNewCameraImage(); */
       jmethodID mid = env->GetMethodID(env->GetObjectClass(context),
                "CheckCameraPermissions", "()Z");
-      SDL_Log("   mid: %p", mid);
 
       bool success = env->CallBooleanMethod(context, mid);
       env->PopLocalFrame(nullptr);
 
-      SDL_Log("CheckCameraPermissions() returned %s", success ? "true": "false");
       if (success)
          g_async_camera_ready = true;
 #endif
