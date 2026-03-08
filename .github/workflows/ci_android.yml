@@ -72,18 +72,21 @@ jobs:
         echo $GITHUB_ENV
         echo $GITHUB_PATH
         if ! github-release info -t continuous > /dev/null 2>&1; then
+          echo "Creating new continuous release"
           github-release release \
             --tag continuous \
             --name "Continuous Build" \
             --description "$DESCRIPTION" \
             --pre-release
         else
+          echo "Editing existing continuous release"
           github-release edit \
             --tag continuous \
             --name "Continuous Build" \
             --description "$DESCRIPTION" \
             --pre-release
         fi
+        echo "Uploading artifacts to continous release"
         github-release upload \
           --tag continuous \
           --name foxscript-debug-latest.apk \
