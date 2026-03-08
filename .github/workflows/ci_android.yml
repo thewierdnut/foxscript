@@ -44,8 +44,7 @@ jobs:
     - name: Compile Android
       run: |
         cd android 
-        ./gradlew tasks
-        ./gradlew build
+        ./gradlew assemble
     - name: Upload apks
       uses: actions/upload-artifact@v4
       with:
