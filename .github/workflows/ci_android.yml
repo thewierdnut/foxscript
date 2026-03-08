@@ -43,7 +43,7 @@ jobs:
         echo $DEBUG_CERTIFICATE | base64 -d > ~/.android/debug.keystore
     - name: Compile Android
       run: |
-        cd .. && ./gradlew --no-daemon assemble
+        cd android && ./gradlew --no-daemon assemble
     - name: Upload apks
       uses: actions/upload-artifact@v4
       with:
